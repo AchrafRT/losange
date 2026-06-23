@@ -2465,26 +2465,34 @@ button{min-height:44px;touch-action:manipulation}input,select{min-height:44px}.s
 /* Clean report date/time controls */
 .reportPanel{padding:0;overflow:hidden}.reportHead{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:14px 14px 10px;border-bottom:1px solid var(--line);background:rgba(7,18,13,.55)}.reportHead h2{margin:0}.reportClock{text-align:right;border:1px solid var(--line);border-radius:12px;background:#07120d;padding:8px 10px;min-width:210px}.reportClock span{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.12em}.reportClock b{display:block;color:var(--accent);font-size:18px;margin-top:2px}.reportBody{padding:14px}.reportFilters{display:grid;grid-template-columns:repeat(12,1fr);gap:10px}.reportField{grid-column:span 3;border:1px solid var(--line);border-radius:12px;background:#07120d;padding:10px}.reportField.wide{grid-column:span 6}.reportField label{font-size:11px;text-transform:uppercase;letter-spacing:.1em}.reportField input,.reportField select{border-radius:8px;font-size:16px;font-weight:800;background:#0b1710}.reportActions{grid-column:span 6;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;align-items:end}.reportActions button{width:100%;min-height:48px}.reportSectionTitle{margin:16px 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.12em;font-size:12px;font-weight:900}.reportMeta{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:8px 0 12px}.reportMeta div{border:1px solid var(--line);border-radius:12px;background:#07120d;padding:10px}.reportMeta span{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.1em}.reportMeta b{display:block;color:var(--text);font-size:16px;margin-top:3px;word-break:break-word}.reportNumber{font-size:20px;line-height:1.1;word-break:break-word}.timeCell{font-family:Consolas,monospace;white-space:nowrap}.dateCell{font-family:Consolas,monospace;white-space:nowrap;color:var(--text)}@media(max-width:1050px){.reportHead{flex-direction:column}.reportClock{text-align:left;width:100%}.reportField,.reportField.wide,.reportActions{grid-column:span 12}.reportActions{grid-template-columns:1fr}.reportMeta{grid-template-columns:repeat(2,1fr)}}@media(max-width:620px){.reportMeta{grid-template-columns:1fr}}
 
-/* Render/browser-chrome compact floor: full dashboard visible in a normal desktop browser */
-@media(min-width:1200px){
-  .app.floorMode{height:100vh;overflow:hidden}
-  .app.floorMode .top{min-height:48px;padding:5px 8px}
-  .app.floorMode .brand b{font-size:16px}.app.floorMode .brand span{font-size:10px}
-  .app.floorMode .actions{gap:5px}.app.floorMode .actions button,.app.floorMode .badge{min-height:28px;padding:5px 7px;font-size:11px;border-radius:9px}
-  .app.floorMode .wrap{height:calc(100vh - 48px);overflow:hidden;padding:6px 10px}
-  .app.floorMode .tabs{height:34px;margin-bottom:4px}.app.floorMode .tabs button{min-height:30px;padding:5px 8px;font-size:12px;border-radius:9px}
-  .app.floorMode .floorGrid{height:calc(100% - 38px);grid-template-rows:repeat(2,minmax(0,1fr));gap:6px;align-items:stretch}
-  .app.floorMode .tableCard{height:100%;min-height:0;overflow:hidden;padding:6px;border-radius:12px;font-size:12px}
-  .app.floorMode .titleline{gap:5px}.app.floorMode .big{font-size:17px;line-height:1}.app.floorMode .statusStack{gap:3px}.app.floorMode .status,.app.floorMode .lightStatus{font-size:9px;padding:3px 6px}
-  .app.floorMode .money{font-size:17px;line-height:1;margin-top:0}.app.floorMode .tiny,.app.floorMode .no-tax{font-size:9px;line-height:1.05}
-  .app.floorMode label{font-size:9px;margin:1px 0 2px}.app.floorMode input,.app.floorMode select{min-height:27px;padding:4px 6px;font-size:12px;border-radius:8px}.app.floorMode button{min-height:27px;padding:4px 7px;font-size:11px;border-radius:8px}
-  .app.floorMode .btns,.app.floorMode .pricebtns,.app.floorMode .tarifTabs{gap:4px;margin:4px 0}.app.floorMode .pricehint{display:none}
-  .app.floorMode .startSlotsBox{padding:4px;margin:4px 0;border-radius:9px}.app.floorMode .startSlotsBox .slotTransferTop{display:none}.app.floorMode .slotBtns{gap:4px}.app.floorMode .slotbtn{min-height:27px;padding:2px 4px}.app.floorMode .slotbtn b{font-size:11px;line-height:1}.app.floorMode .slotbtn small{font-size:8px;line-height:1}
-  .app.floorMode .tarifTab{min-height:27px}.app.floorMode .customBox{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px;margin:4px 0;border-radius:9px}.app.floorMode .customBox>b{grid-column:1/-1;font-size:12px;line-height:1}
-  .app.floorMode .customModeBtns{margin:0;gap:4px}.app.floorMode .customModeBtn{min-height:28px}.app.floorMode .customValueLine{gap:2px}.app.floorMode .customValueLine input{font-size:13px;min-height:28px}
-  .app.floorMode .customReady{grid-column:1/-1;margin:0;padding:3px 6px;font-size:9px}.app.floorMode .customBox p.tiny{display:none}.app.floorMode .tableCard>div[style]{height:2px!important}
-  .app.floorMode .players{margin:3px 0;gap:3px;overflow:hidden}.app.floorMode .playerEdit{grid-template-columns:auto minmax(0,1fr) 78px 55px 55px 52px;gap:3px;padding:3px;border-radius:8px}.app.floorMode .playerEdit button{min-height:26px;padding:3px;font-size:9px}
-  .app.floorMode .slotid{min-width:34px;padding:4px 5px}.app.floorMode .playerTotal{min-width:78px;padding:3px 4px;border-radius:7px}.app.floorMode .playerTotal b{font-size:11px}.app.floorMode .playerTotal small{font-size:7px}.app.floorMode .row{gap:4px}.app.floorMode .closegrid{gap:4px}
+/* Unified local + Render desktop floor mode */
+@media(min-width:1100px){
+  html,body{height:100%;overflow:hidden}
+  body{font-size:14px}
+  .app.floorMode{height:100vh;min-height:0;overflow:hidden;display:flex;flex-direction:column}
+  .app.floorMode .top{position:relative;flex:0 0 58px;min-height:58px;padding:8px 12px}
+  .app.floorMode .brand b{font-size:19px;line-height:1.05}.app.floorMode .brand span{font-size:11px}
+  .app.floorMode .actions{gap:7px}.app.floorMode .actions button,.app.floorMode .badge{min-height:38px;padding:8px 10px;font-size:13px;border-radius:10px}
+  .app.floorMode .wrap{width:100%;max-width:none;height:calc(100vh - 58px);min-height:0;overflow:hidden;padding:8px 14px;display:flex;flex-direction:column}
+  .app.floorMode .tabs{flex:0 0 40px;height:40px;margin:0 0 8px;gap:8px}.app.floorMode .tabs button{min-height:38px;padding:8px 14px;font-size:14px;border-radius:11px}
+  .app.floorMode .floorGrid{flex:1;min-height:0;height:auto;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr));gap:10px;align-items:stretch}
+  .app.floorMode .tableCard{height:100%;min-height:0;overflow:hidden;padding:10px;border-radius:14px;font-size:13px;display:flex;flex-direction:column}
+  .app.floorMode .titleline{gap:8px;margin-bottom:4px}.app.floorMode .big{font-size:22px;line-height:1}.app.floorMode .statusStack{gap:5px}.app.floorMode .status,.app.floorMode .lightStatus{font-size:10px;padding:5px 8px}
+  .app.floorMode .money{font-size:24px;line-height:1.05;margin-top:0}.app.floorMode .tiny,.app.floorMode .no-tax{font-size:10.5px;line-height:1.12}
+  .app.floorMode label{font-size:10.5px;margin:3px 0 3px}.app.floorMode input,.app.floorMode select{min-height:34px;padding:6px 8px;font-size:14px;border-radius:9px}.app.floorMode button{min-height:36px;padding:7px 10px;font-size:13px;border-radius:9px}
+  .app.floorMode .btns,.app.floorMode .pricebtns,.app.floorMode .tarifTabs{gap:6px;margin:6px 0}.app.floorMode .pricehint{display:none}
+  .app.floorMode .pricebtns button{min-height:38px;font-size:13px}.app.floorMode .tarifTab{min-height:38px}
+  .app.floorMode .startSlotsBox{padding:6px;margin:6px 0;border-radius:10px}.app.floorMode .startSlotsBox .slotTransferTop{margin-bottom:5px}.app.floorMode .slotBtns{gap:5px}.app.floorMode .slotbtn{min-height:40px;padding:5px}.app.floorMode .slotbtn b{font-size:13px;line-height:1}.app.floorMode .slotbtn small{font-size:9px;line-height:1}
+  .app.floorMode .customBox{display:grid;grid-template-columns:1fr 1fr minmax(150px,2fr);gap:6px;padding:6px;margin:6px 0;border-radius:10px;align-items:end}
+  .app.floorMode .customBox>b{grid-column:1/-1;font-size:14px;line-height:1}
+  .app.floorMode .customModeBtns{grid-column:1/3;margin:0;gap:6px}.app.floorMode .customModeBtn{min-height:40px}.app.floorMode .customValueLine{grid-column:3/4;gap:3px}.app.floorMode .customValueLine input{font-size:16px;min-height:38px}
+  .app.floorMode .customReady{grid-column:1/-1;margin:0;padding:5px 8px;font-size:10px}.app.floorMode .customBox p.tiny{display:none}.app.floorMode .tableCard>div[style]{height:5px!important}
+  .app.floorMode .players{min-height:0;overflow:auto;margin:5px 0;gap:5px}.app.floorMode .playerEdit{grid-template-columns:auto minmax(0,1fr) 92px 64px 64px 58px;gap:5px;padding:5px;border-radius:9px}.app.floorMode .playerEdit button{min-height:32px;padding:5px;font-size:11px}
+  .app.floorMode .slotid{min-width:42px;padding:6px 7px}.app.floorMode .playerTotal{min-width:92px;padding:5px 6px;border-radius:8px}.app.floorMode .playerTotal b{font-size:13px}.app.floorMode .playerTotal small{font-size:8px}.app.floorMode .row{gap:6px}.app.floorMode .closegrid{gap:6px}
+  .app.floorMode .slotTransfer{padding:6px;margin:6px 0}.app.floorMode .slotTransfer p.tiny{display:none}.app.floorMode .transferControls{gap:6px;margin-top:6px}
+}
+@media(min-width:1100px) and (max-width:1350px){
+  .app.floorMode .customBox{grid-template-columns:1fr 1fr}.app.floorMode .customValueLine{grid-column:1/-1}.app.floorMode .customModeBtns{grid-column:1/-1}
 }
 
 

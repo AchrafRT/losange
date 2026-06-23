@@ -68,6 +68,11 @@ Verified from a clean extracted zip:
   - Wide-screen floor mode now compacts by browser width, so it works even when browser chrome/bookmarks/taskbar reduce the available height.
   - Header, tabs, table cards, buttons, player rows, and custom timer controls are shorter in Render desktop view.
   - Helper text is hidden in floor mode so the Custom amount/minutes panel and normal Ouvrir button stay visible.
+- Local + Render UI reset:
+  - Replaced the too-small Render-only compact rules with one shared desktop/kiosk floor layout.
+  - Floor view now uses the full browser width instead of a narrow centered dashboard.
+  - Touch controls, table titles, totals, rate tabs, and custom timer controls are larger and consistent for local and hosted use.
+  - Custom timer amount/minutes/value controls stay on one compact row on normal desktop widths.
 
 Architecture:
 - Original local-first one-file app preserved in pool_app_verified/run_pool.py.
