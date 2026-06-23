@@ -60,6 +60,14 @@ Verified from a clean extracted zip:
 - Render hostable package:
   - render.yaml, Procfile, runtime.txt, start_render.sh, README_RENDER.txt, and GITHUB_RENDER_DEPLOY.txt included.
   - Render start wrapper verified with PORT environment variable.
+- Render custom timer visibility fix:
+  - Compact floor cards no longer clip the Custom timer section.
+  - Custom timer controls are more compact in floor mode.
+  - Table cards allow internal overflow instead of hiding the bottom of the Custom panel.
+- Render browser scaling fix:
+  - Wide-screen floor mode now compacts by browser width, so it works even when browser chrome/bookmarks/taskbar reduce the available height.
+  - Header, tabs, table cards, buttons, player rows, and custom timer controls are shorter in Render desktop view.
+  - Helper text is hidden in floor mode so the Custom amount/minutes panel and normal Ouvrir button stay visible.
 
 Architecture:
 - Original local-first one-file app preserved in pool_app_verified/run_pool.py.
