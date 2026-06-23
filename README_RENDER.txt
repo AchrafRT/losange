@@ -1,38 +1,30 @@
-SayF Pool Control - Render Demo Hosting
-=======================================
+POOL APP v12 - RENDER DEMO HOSTING
+===================================
 
-This package is the same local pool-table software, prepared for GitHub + Render demo hosting.
+This ZIP keeps the v12 software source unchanged.
+Only Render deployment files were added at the ZIP root:
 
-Render settings
----------------
+- Procfile
+- requirements.txt
+- render.yaml
+- README_RENDER.txt
+
+Render settings:
 
 Build command:
     pip install -r requirements.txt
 
 Start command:
-    bash start_render.sh
+    python pool_app_verified/run_pool.py --host 0.0.0.0 --port $PORT --no-browser
 
-Included deployment files
--------------------------
+Notes:
+- This is for demo hosting only.
+- Relay/USB hardware control should stay local at the bar.
+- Demo runtime data is stored in pool_app_verified/pool_runtime.
+- On Render free/demo hosting, this data can reset after redeploy/restart unless you add persistent storage.
 
-- render.yaml
-- Procfile
-- requirements.txt
-- start_render.sh
-- runtime.txt
-- GITHUB_RENDER_DEPLOY.txt
-
-Important notes
----------------
-
-- Render hosting is for demo / remote testing.
-- Real relay / USB / RS-485 hardware control should run locally at the bar computer.
-- Runtime JSON data is stored in pool_app_verified/pool_runtime.
-- Render free/demo storage can reset after restart/redeploy unless you add persistent storage.
-
-Default passwords
------------------
-
+Passwords:
 - AM: am or AM
 - PM: pm or PM
 - Admin: admin
+- Custom rate: pool

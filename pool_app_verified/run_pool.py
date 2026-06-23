@@ -49,7 +49,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 APP_NAME = "SayF Pool Control"
-APP_VERSION = "2026.06.23-v13-preserve-architecture-tabs-timers"
+APP_VERSION = "2026.06.07-v12-floor-map-tablet-layout"
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "pool_runtime"
 CONFIG_PATH = DATA_DIR / "config.json"
@@ -70,7 +70,7 @@ DEFAULT_CONFIG = {
     "max_players_per_table": 4,
     "custom_rate_password": "pool",
     "rounding": 0.05,
-    "timezone": "America/Toronto",
+    "timezone": "America/Montreal",
     "passwords": {
         "am": "am",
         "pm": "PM",
@@ -79,12 +79,12 @@ DEFAULT_CONFIG = {
     "pricing_options": [
         {
             "id": "am_hourly",
-            "fr": "AM 11h-19h - 6$/h",
-            "en": "AM 11am-7pm - $6/h",
+            "fr": "AM 11h-19h - 6$/h (+7$/joueur extra)",
+            "en": "AM 11am-7pm - $6/h (+$7/extra player)",
             "kind": "hourly",
             "per_hour": 6.0,
             "flat_amount": 0.0,
-            "extra_player_fee": 0.0,
+            "extra_player_fee": 7.0,
             "included_players": 1,
             "shift": "am",
             "days": [0, 1, 2, 3, 4, 5, 6],
@@ -92,8 +92,8 @@ DEFAULT_CONFIG = {
         },
         {
             "id": "am_flat",
-            "fr": "AM 11h-19h - 9$ forfait",
-            "en": "AM 11am-7pm - $9 flat",
+            "fr": "AM 11h-19h - 9$ forfait 8h (+7$/joueur extra)",
+            "en": "AM 11am-7pm - $9 8h flat (+$7/extra player)",
             "kind": "flat",
             "per_hour": 0.0,
             "flat_amount": 9.0,
@@ -174,13 +174,11 @@ def utc_iso(ts: float | None = None) -> str:
 
 
 def app_timezone():
-    """Return the configured bar timezone.
+    """Return the configured bar timezone. Default is America/Montreal.
 
     This avoids wrong AM/PM pricing if the computer, VM, or container is set to UTC.
-    If Python has no IANA timezone database, fall back to the computer local time
-    instead of crashing with "No time zone found".
     """
-    tz_name = str(DEFAULT_CONFIG.get("timezone", "America/Toronto"))
+    tz_name = str(DEFAULT_CONFIG.get("timezone", "America/Montreal"))
     try:
         if CONFIG_PATH.exists():
             raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
@@ -192,10 +190,7 @@ def app_timezone():
     try:
         return ZoneInfo(tz_name)
     except Exception:
-        try:
-            return ZoneInfo("America/Toronto")
-        except Exception:
-            return None
+        return ZoneInfo("America/Montreal")
 
 
 def local_dt(ts: float | None = None) -> _dt.datetime:
@@ -339,7 +334,7 @@ def normalize_pricing_options(options) -> list[dict]:
     for i, r in enumerate(options or []):
         rid = str(r.get("id") or f"pricing_{i+1}").strip().replace(" ", "_")
         kind = str(r.get("kind") or "hourly").lower().strip()
-        if kind not in ("hourly", "flat", "timer"):
+        if kind not in ("hourly", "flat"):
             kind = "hourly"
         try:
             days = [int(x) for x in (r.get("days") or [0, 1, 2, 3, 4, 5, 6])]
@@ -347,12 +342,12 @@ def normalize_pricing_options(options) -> list[dict]:
             days = [0, 1, 2, 3, 4, 5, 6]
         out.append({
             "id": rid,
-            "fr": "AM 11h-19h - 6$/h" if rid == "am_hourly" else ("AM 11h-19h - 9$ forfait" if rid == "am_flat" else str(r.get("fr") or r.get("name") or rid)),
-            "en": "AM 11am-7pm - $6/h" if rid == "am_hourly" else ("AM 11am-7pm - $9 flat" if rid == "am_flat" else str(r.get("en") or r.get("name") or rid)),
+            "fr": str(r.get("fr") or r.get("name") or rid),
+            "en": str(r.get("en") or r.get("name") or rid),
             "kind": kind,
             "per_hour": max(0.0, float(r.get("per_hour") or 0)),
             "flat_amount": max(0.0, float(r.get("flat_amount") or 0)),
-            "extra_player_fee": 0.0 if rid == "am_hourly" else max(0.0, float(r.get("extra_player_fee", 7.0 if rid == "am_flat" else 0.0) or 0)),
+            "extra_player_fee": max(0.0, float(r.get("extra_player_fee") or 0)),
             "included_players": max(1, int(r.get("included_players") or 1)),
             "shift": str(r.get("shift") or "any").lower(),
             "days": days,
@@ -407,12 +402,6 @@ def table_template(number: int) -> dict:
         "notes": "",
         "relay_on": False,
         "last_total": 0.0,
-        "custom_pricing": None,
-        "custom_duration_seconds": 0,
-        "timer_started_at": None,
-        "timer_warning_sent": False,
-        "timer_expired": False,
-        "timer_expired_at": None,
     }
 
 
@@ -640,33 +629,6 @@ def elapsed_seconds(t: dict, now: float | None = None) -> float:
     return max(0.0, elapsed)
 
 
-def timer_remaining_seconds(t: dict, now: float | None = None) -> int | None:
-    if str(t.get("pricing_kind") or "") != "timer":
-        return None
-    duration = int(float(t.get("custom_duration_seconds") or 0))
-    if duration <= 0:
-        return None
-    now = time.time() if now is None else now
-    remaining = duration - int(elapsed_seconds(t, now))
-    return max(0, remaining)
-
-
-def current_hourly_pricing(cfg: dict | None = None, ts: float | None = None) -> dict:
-    cfg = load_config() if cfg is None else cfg
-    ts = time.time() if ts is None else ts
-    opts = allowed_pricing_options(cfg, ts)
-    for p in opts:
-        if p.get("kind") == "hourly":
-            return p
-    for p in cfg.get("pricing_options", []):
-        if p.get("kind") == "hourly" and is_pricing_allowed(p, ts):
-            return p
-    for p in cfg.get("pricing_options", []):
-        if p.get("kind") == "hourly":
-            return p
-    return DEFAULT_CONFIG["pricing_options"][0]
-
-
 def participant_count(t: dict) -> int:
     return max(1, active_player_count(t), int(t.get("max_players") or 0))
 
@@ -678,9 +640,7 @@ def active_player_count(t: dict) -> int:
 def subtotal_for(t: dict, cfg: dict | None = None, now: float | None = None) -> float:
     cfg = load_config() if cfg is None else cfg
     kind = str(t.get("pricing_kind") or "hourly")
-    if kind == "timer":
-        base = float(t.get("flat_amount") or 0.0)
-    elif kind == "flat":
+    if kind == "flat":
         base = float(t.get("flat_amount") or 0.0)
     else:
         base = elapsed_seconds(t, now) / 3600.0 * float(t.get("rate_per_hour") or 0.0)
@@ -729,69 +689,6 @@ def active_unpaid_players_list(t: dict) -> list[dict]:
     return [p for p in active_players_list(t) if str(p.get("id") or "") not in billed]
 
 
-def per_player_bill_rows(t: dict, participants: list[dict], total_due: float, cfg: dict | None = None) -> list[dict]:
-    cfg = load_config() if cfg is None else cfg
-    rounding = float(cfg.get("rounding", 0.05))
-    players = sorted(participants, key=lambda p: player_slot_value(p, t.get("number") or 0) or 99)
-    if not players:
-        return []
-
-    if str(t.get("pricing_id")) == "am_flat":
-        base = float(t.get("flat_amount") or 9.0)
-        extra = float(t.get("extra_player_fee") or 7.0)
-        billed = billed_player_ids_for_table(t)
-        already_paid = paid_total_for_table(t)
-        rows = []
-        expected_remaining = 0.0
-        for idx, p in enumerate(players):
-            pid = str(p.get("id") or "")
-            if pid in billed:
-                continue
-            slot = player_slot_value(p, t.get("number") or 0)
-            amount = base if slot == 1 else extra
-            if slot is None and idx == 0 and already_paid <= 0:
-                amount = base
-            expected_remaining += amount
-            rows.append((p, amount))
-        if rows and abs(expected_remaining - total_due) > max(0.05, rounding):
-            scale = total_due / expected_remaining if expected_remaining > 0 else 0
-            rows = [(p, amount * scale) for p, amount in rows]
-        allocated = 0.0
-        out = []
-        for idx, (p, amount) in enumerate(rows):
-            if idx == len(rows) - 1:
-                share = money_round(max(0.0, total_due - allocated), rounding)
-            else:
-                share = money_round(amount, rounding)
-                allocated = round(allocated + share, 2)
-            out.append({
-                "player_id": p.get("id"),
-                "player_name": p.get("name") or p.get("id"),
-                "share_total": share,
-                "share_total_without_tax": total_without_tax_from_total(share, cfg),
-                "share_tax_included": included_tax_from_total(share, cfg),
-            })
-        return out
-
-    allocated = 0.0
-    out = []
-    raw_share = total_due / max(1, len(players))
-    for idx, p in enumerate(players):
-        if idx == len(players) - 1:
-            share = money_round(max(0.0, total_due - allocated), rounding)
-        else:
-            share = money_round(min(raw_share, max(0.0, total_due - allocated)), rounding)
-            allocated = round(allocated + share, 2)
-        out.append({
-            "player_id": p.get("id"),
-            "player_name": p.get("name") or p.get("id"),
-            "share_total": share,
-            "share_total_without_tax": total_without_tax_from_total(share, cfg),
-            "share_tax_included": included_tax_from_total(share, cfg),
-        })
-    return out
-
-
 def player_running_allocations(t: dict, cfg: dict | None = None, now: float | None = None) -> dict[str, dict]:
     """Current amount owed by each active, unpaid player.
 
@@ -810,11 +707,16 @@ def player_running_allocations(t: dict, cfg: dict | None = None, now: float | No
     due = money_round(float(totals.get("due_total") or 0.0), float(cfg.get("rounding", 0.05)))
     rounding = float(cfg.get("rounding", 0.05))
     out: dict[str, dict] = {}
-    rows = per_player_bill_rows(t, players, due, cfg)
-    share_count = len(rows)
-    for p, row in zip(players, rows):
+    allocated = 0.0
+    share_count = len(players)
+    raw_share = due / max(1, share_count)
+    for idx, p in enumerate(players):
         pid = str(p.get("id") or "")
-        amount = money_round(float(row.get("share_total") or 0.0), rounding)
+        if idx == share_count - 1:
+            amount = money_round(max(0.0, due - allocated), rounding)
+        else:
+            amount = money_round(min(raw_share, max(0.0, due - allocated)), rounding)
+            allocated = round(allocated + amount, 2)
         out[pid] = {
             "player_id": pid,
             "running_total": amount,
@@ -977,75 +879,15 @@ def set_relay_for_table(cfg: dict, table: int, on: bool) -> dict:
     return RelayDriver(cfg).send(ch, on)
 
 
-def blink_relay_for_table(cfg: dict, table: int, pulses: int = 3) -> list[dict]:
-    results = []
-    for _ in range(max(1, int(pulses))):
-        results.append(set_relay_for_table(cfg, table, False))
-        time.sleep(0.35)
-        results.append(set_relay_for_table(cfg, table, True))
-        time.sleep(0.35)
-    return results
-
-
-def process_custom_timers(state: dict | None = None, cfg: dict | None = None, now: float | None = None, allow_blink: bool = True) -> bool:
-    cfg = load_config() if cfg is None else cfg
-    state = load_state() if state is None else state
-    now = time.time() if now is None else now
-    changed = False
-    for key, t in state.get("tables", {}).items():
-        if t.get("status") not in ("running", "paused"):
-            continue
-        if str(t.get("pricing_kind") or "") != "timer":
-            continue
-        remaining = timer_remaining_seconds(t, now)
-        if remaining is None:
-            continue
-        table = int(t.get("number") or key)
-        if 0 < remaining <= 180 and not t.get("timer_warning_sent"):
-            if allow_blink:
-                blink = blink_relay_for_table(cfg, table, 3)
-                t["relay_on"] = True
-                t["timer_warning_sent"] = True
-                changed = True
-                event("timer_warning_blink", table, {"role": "system", "label": "Timer"}, session_id=t.get("session_id"), remaining_seconds=remaining, relay=blink)
-        if remaining <= 0 and not t.get("timer_expired"):
-            relay = set_relay_for_table(cfg, table, False)
-            t["relay_on"] = False
-            t["status"] = "paused"
-            t["timer_expired"] = True
-            t["timer_expired_at"] = utc_iso(now)
-            t["paused_at"] = now
-            changed = True
-            event("timer_expired_light_off", table, {"role": "system", "label": "Timer"}, session_id=t.get("session_id"), relay=relay)
-    if changed:
-        save_state(state)
-    return changed
-
-
-def timer_worker():
-    while True:
-        try:
-            ensure_runtime()
-            process_custom_timers(allow_blink=True)
-        except Exception:
-            pass
-        time.sleep(5)
-
-
 def enrich_state(state: dict | None = None, cfg: dict | None = None) -> dict:
     cfg = load_config() if cfg is None else cfg
     state = load_state() if state is None else state
     now = time.time()
-    process_custom_timers(state, cfg, now, allow_blink=False)
     out = json.loads(json.dumps(state, ensure_ascii=False))
     for key, t in out.get("tables", {}).items():
         subtotal = subtotal_for(t, cfg, now)
         tax, total = total_with_tax(subtotal, cfg)
         t["elapsed_seconds"] = int(elapsed_seconds(t, now))
-        remaining = timer_remaining_seconds(t, now)
-        t["timer_remaining_seconds"] = remaining
-        t["timer_total_seconds"] = int(t.get("custom_duration_seconds") or 0)
-        t["timer_warning"] = remaining is not None and remaining <= 180 and remaining > 0
         t["subtotal"] = subtotal
         t["tax"] = tax
         t["total_without_tax"] = total_without_tax_from_total(total, cfg)
@@ -1122,7 +964,8 @@ def check_login(password: str) -> dict | None:
     am_password = str(pw.get("am", "am")).strip()
     pm_password = str(pw.get("pm", "PM")).strip()
 
-    if clean_password == admin_password:
+    # Admin password for this build is admin. Keep config-compatible fallback for upgrades.
+    if clean_password == "admin" or clean_password == admin_password:
         return {"role": "admin", "shift": "admin", "label": "Admin", "business_date": business_date, "signed_in_at": utc_iso()}
 
     # Shift passwords are operator-friendly: AM/am and PM/pm both work.
@@ -1153,54 +996,34 @@ def custom_pricing_from_payload(payload: dict, user: dict, cfg: dict) -> tuple[b
     custom = payload.get("custom_rate")
     if not custom:
         return False, "", None
-    kind = str(custom.get("kind") or "timer_amount").lower().strip()
-    if kind not in ("hourly", "flat", "timer_amount", "timer_minutes"):
-        kind = "timer_amount"
+    password = str(payload.get("custom_password") or custom.get("password") or "").strip()
+    required = str(cfg.get("custom_rate_password") or "pool").strip()
+    if user.get("role") != "admin" and password != required:
+        return False, "Mot de passe tarif custom requis.", None
+    kind = str(custom.get("kind") or "hourly").lower().strip()
+    if kind not in ("hourly", "flat"):
+        kind = "hourly"
     try:
         amount = float(custom.get("amount") or 0)
     except Exception:
-        amount = 0.0
-    try:
-        minutes = float(custom.get("minutes") or 0)
-    except Exception:
-        minutes = 0.0
-    hourly = current_hourly_pricing(cfg)
-    hourly_amount = float(hourly.get("per_hour") or 0.0) or 1.0
-    if kind == "timer_minutes":
-        if minutes <= 0:
-            return False, "Minutes custom invalides.", None
-        amount = money_round((minutes / 60.0) * hourly_amount, float(cfg.get("rounding", 0.05)))
-        duration_seconds = int(minutes * 60)
-        label = f"CUSTOM {minutes:g} minutes ({amount:.2f}$)"
-    elif kind == "timer_amount":
-        if amount <= 0:
-            return False, "Montant custom invalide.", None
-        amount = money_round(amount, float(cfg.get("rounding", 0.05)))
-        duration_seconds = int((amount / hourly_amount) * 3600)
-        label = f"CUSTOM {amount:.2f}$ ({max(1, round(duration_seconds / 60))} min)"
-    else:
-        if amount <= 0:
-            return False, "Montant custom invalide.", None
-        amount = money_round(amount, float(cfg.get("rounding", 0.05)))
-        duration_seconds = 0
-        label = f"CUSTOM {'$/h' if kind == 'hourly' else 'forfait'} {amount:.2f}$"
-    pricing_kind = "timer" if kind in ("timer_amount", "timer_minutes") else kind
+        return False, "Montant custom invalide.", None
+    if amount <= 0:
+        return False, "Montant custom invalide.", None
+    amount = money_round(amount, float(cfg.get("rounding", 0.05)))
+    label = f"CUSTOM {'$/h' if kind == 'hourly' else 'forfait'} {amount:.2f}$"
     return True, "", {
-        "id": f"custom_{kind}_{amount:.2f}_{int(duration_seconds)}",
+        "id": f"custom_{kind}_{amount:.2f}",
         "fr": label,
         "en": label,
-        "kind": pricing_kind,
-        "per_hour": amount if pricing_kind == "hourly" else 0.0,
-        "flat_amount": amount if pricing_kind in ("flat", "timer") else 0.0,
+        "kind": kind,
+        "per_hour": amount if kind == "hourly" else 0.0,
+        "flat_amount": amount if kind == "flat" else 0.0,
         "extra_player_fee": float(custom.get("extra_player_fee") or 0.0),
         "included_players": 1,
         "shift": "any",
         "days": [0, 1, 2, 3, 4, 5, 6],
         "staff_selectable": False,
         "custom": True,
-        "custom_duration_seconds": duration_seconds,
-        "normal_hourly_pricing_id": hourly.get("id"),
-        "normal_hourly_rate": hourly_amount,
     }
 
 
@@ -1280,12 +1103,6 @@ def start_table(payload: dict, user: dict) -> tuple[bool, str, dict | None]:
         "business_date": business_date,
         "opened_by": user.get("label"),
         "custom_rate": bool(pricing.get("custom")),
-        "custom_pricing": json.loads(json.dumps(pricing, ensure_ascii=False)) if pricing.get("custom") else None,
-        "custom_duration_seconds": int(pricing.get("custom_duration_seconds") or 0),
-        "timer_started_at": now if str(pricing.get("kind")) == "timer" else None,
-        "timer_warning_sent": False,
-        "timer_expired": False,
-        "timer_expired_at": None,
     })
     normalize_player_slots_for_table(t, table, cfg)
     relay = {"ok": True, "message": "Relay not requested"}
@@ -1337,55 +1154,6 @@ def resume_table(payload: dict, user: dict) -> tuple[bool, str, dict | None]:
     save_state(state)
     event("table_resume", table, user, session_id=t.get("session_id"), relay=relay)
     return True, "Table reprise.", enrich_state(state, cfg)
-
-
-def resume_table_hourly(payload: dict, user: dict) -> tuple[bool, str, dict | None]:
-    cfg = load_config()
-    state = load_state()
-    table = int(payload.get("table"))
-    t = state["tables"].get(str(table))
-    if not t or t.get("status") == "off":
-        return False, "Aucune session active.", None
-    if not t.get("timer_expired") and str(t.get("pricing_kind") or "") != "timer":
-        return False, "Cette option est seulement pour une minuterie custom terminée.", None
-    now = time.time()
-    totals = session_totals_for_table(t, cfg, now)
-    carried_amount = float(totals.get("due_total") or totals.get("total") or 0.0)
-    if carried_amount > 0:
-        t.setdefault("adjustments", []).append({
-            "ts": utc_iso(now),
-            "amount": carried_amount,
-            "note": "Montant custom conservé avant reprise horaire",
-            "by": user.get("label"),
-        })
-    pricing = current_hourly_pricing(cfg, now)
-    t.update({
-        "status": "running",
-        "pricing_id": str(pricing.get("id")),
-        "pricing_name_fr": "Reprise horaire - " + str(pricing.get("fr")),
-        "pricing_name_en": "Hourly resume - " + str(pricing.get("en")),
-        "pricing_kind": "hourly",
-        "rate_per_hour": float(pricing.get("per_hour") or 0),
-        "flat_amount": 0.0,
-        "extra_player_fee": float(pricing.get("extra_player_fee") or 0),
-        "included_players": int(pricing.get("included_players") or 1),
-        "started_at": now,
-        "paused_at": None,
-        "paused_total": 0.0,
-        "custom_pricing": None,
-        "custom_duration_seconds": 0,
-        "timer_started_at": None,
-        "timer_warning_sent": False,
-        "timer_expired": False,
-        "timer_expired_at": None,
-        "custom_rate": False,
-    })
-    relay = set_relay_for_table(cfg, table, True) if cfg.get("relay", {}).get("open_after_start", True) else {"ok": True, "message": "Relay not requested"}
-    if relay.get("ok"):
-        t["relay_on"] = True
-    save_state(state)
-    event("table_resume_hourly_after_timer", table, user, session_id=t.get("session_id"), carried_amount=carried_amount, pricing_id=pricing.get("id"), relay=relay)
-    return True, "Table reprise au tarif horaire courant.", enrich_state(state, cfg)
 
 
 def add_player(payload: dict, user: dict) -> tuple[bool, str, dict | None]:
@@ -1633,12 +1401,19 @@ def stop_table(payload: dict, user: dict) -> tuple[bool, str, dict | None]:
     participants = [p for p in active_players_list(t) if p.get("id") not in billed_player_ids_for_table(t)]
     if not participants:
         participants = [player_template(t.get("client") or "Joueur", table, 1)]
+    per_player = money_round(total_due / max(1, len(participants)), float(cfg.get("rounding", 0.05)))
     total_without_tax = total_without_tax_from_total(total_due, cfg)
     tax_included = included_tax_from_total(total_due, cfg)
     player_bills = []
-    for idx, bill in enumerate(per_player_bill_rows(t, participants, total_due, cfg), 1):
-        bill["bill_number"] = protected_number("PBILL", t.get("session_id"), bill.get("player_id") or idx)
-        player_bills.append(bill)
+    for idx, p in enumerate(participants, 1):
+        player_bills.append({
+            "player_id": p.get("id"),
+            "player_name": p.get("name") or f"Joueur {idx}",
+            "bill_number": protected_number("PBILL", t.get("session_id"), p.get("id") or idx),
+            "share_total": per_player,
+            "share_total_without_tax": total_without_tax_from_total(per_player, cfg),
+            "share_tax_included": included_tax_from_total(per_player, cfg),
+        })
     row = {
         "session_id": t.get("session_id") or uuid.uuid4().hex,
         "parent_session_id": t.get("session_id"),
@@ -1661,9 +1436,6 @@ def stop_table(payload: dict, user: dict) -> tuple[bool, str, dict | None]:
         "pricing_kind": t.get("pricing_kind", "hourly"),
         "rate_per_hour": float(t.get("rate_per_hour") or 0),
         "flat_amount": float(t.get("flat_amount") or 0),
-        "custom_pricing": t.get("custom_pricing"),
-        "custom_duration_seconds": int(t.get("custom_duration_seconds") or 0),
-        "timer_expired": bool(t.get("timer_expired")),
         "max_players": max(int(t.get("max_players") or 0), len(t.get("players") or []), 1),
         "extra_player_fee": float(t.get("extra_player_fee") or 0),
         "included_players": int(t.get("included_players") or 1),
@@ -1847,13 +1619,6 @@ def relay_action(payload: dict, user: dict) -> dict:
     else:
         channel = int(channel)
         table = None
-        for tc in cfg.get("tables", []):
-            try:
-                if int(tc.get("relay_channel")) == channel:
-                    table = int(tc.get("number"))
-                    break
-            except Exception:
-                pass
     res = RelayDriver(cfg).send(channel, on)
     if table is not None and str(table) in state.get("tables", {}):
         if res.get("ok"):
@@ -2067,34 +1832,6 @@ def owner_report(query: dict) -> dict:
     }
 
 
-def admin_report() -> dict:
-    cfg = load_config()
-    rows = sessions_filtered()
-    events_rows = read_jsonl(EVENTS_PATH)
-    summary = summarize_sessions(rows, cfg)
-    table_open_counts: dict[str, int] = {}
-    pricing_counts: dict[str, int] = {}
-    payment_counts: dict[str, int] = {}
-    for r in rows:
-        table_open_counts[str(r.get("table"))] = table_open_counts.get(str(r.get("table")), 0) + 1
-        pricing_counts[str(r.get("pricing_id"))] = pricing_counts.get(str(r.get("pricing_id")), 0) + 1
-        payment_counts[str(r.get("payment_method") or ("paid" if r.get("paid") else "unpaid"))] = payment_counts.get(str(r.get("payment_method") or ("paid" if r.get("paid") else "unpaid")), 0) + 1
-    manual = [e for e in events_rows if str(e.get("action")) in ("relay_manual", "relay_all_tables", "timer_warning_blink", "timer_expired_light_off")]
-    manual_recent = manual[-50:][::-1]
-    return {
-        "ok": True,
-        "type": "admin",
-        "report_number": protected_number("ADMIN", local_dt().strftime("%Y%m%d"), "CONTROL"),
-        "generated_at": utc_iso(),
-        "summary": summary,
-        "table_open_counts": table_open_counts,
-        "pricing_counts": dict(sorted(pricing_counts.items(), key=lambda item: item[1], reverse=True)),
-        "payment_counts": payment_counts,
-        "manual_events": manual_recent,
-        "sessions": rows[-200:][::-1],
-    }
-
-
 def active_bill(table: int) -> dict:
     cfg = load_config()
     state = load_state()
@@ -2109,10 +1846,7 @@ def active_bill(table: int) -> dict:
     participants = [p for p in active_players_list(t) if p.get("id") not in billed_player_ids_for_table(t)]
     if not participants:
         participants = [player_template(t.get("client") or "Joueur 1", table, 1)]
-    player_bills = []
-    for p in per_player_bill_rows(t, participants, due_total, cfg):
-        p["bill_number"] = protected_number("PPRE", t.get("session_id"), p.get("player_id"))
-        player_bills.append(p)
+    per_player = money_round(due_total / max(1, len(participants)), float(cfg.get("rounding", 0.05)))
     return {
         "session_id": t.get("session_id"),
         "bill_number": t.get("bill_number") or protected_number("PREBILL", table, int(now)),
@@ -2122,7 +1856,7 @@ def active_bill(table: int) -> dict:
         "client": t.get("client", ""),
         "players": participants,
         "player_cashouts": t.get("player_cashouts") or [],
-        "player_bills": player_bills,
+        "player_bills": [{"player_id": p.get("id"), "player_name": p.get("name"), "bill_number": protected_number("PPRE", t.get("session_id"), p.get("id")), "share_total": per_player, "share_total_without_tax": total_without_tax_from_total(per_player, cfg), "share_tax_included": included_tax_from_total(per_player, cfg)} for p in participants],
         "started_at": utc_iso(float(t.get("started_at") or now)),
         "ended_at": utc_iso(now),
         "duration_seconds": int(elapsed_seconds(t, now)),
@@ -2132,10 +1866,6 @@ def active_bill(table: int) -> dict:
         "pricing_kind": t.get("pricing_kind"),
         "rate_per_hour": float(t.get("rate_per_hour") or 0),
         "flat_amount": float(t.get("flat_amount") or 0),
-        "custom_pricing": t.get("custom_pricing"),
-        "custom_duration_seconds": int(t.get("custom_duration_seconds") or 0),
-        "timer_remaining_seconds": timer_remaining_seconds(t, now),
-        "timer_expired": bool(t.get("timer_expired")),
         "max_players": max(int(t.get("max_players") or 0), len(t.get("players") or []), 1),
         "extra_player_fee": float(t.get("extra_player_fee") or 0),
         "included_players": int(t.get("included_players") or 1),
@@ -2347,7 +2077,7 @@ def pdf_receipt(row: dict, player_id: str | None = None) -> bytes:
 
 def pdf_report(rep: dict) -> bytes:
     cfg = load_config()
-    title_map = {"shift": "RAPPORT DE QUART", "daily": "RAPPORT JOURNALIER", "owner": "RAPPORT PROPRIÉTAIRE", "admin": "RAPPORT ADMIN"}
+    title_map = {"shift": "RAPPORT DE QUART", "daily": "RAPPORT JOURNALIER", "owner": "RAPPORT PROPRIÉTAIRE"}
     title = f"{title_map.get(rep.get('type'), 'RAPPORT')} - {rep.get('report_number')}"
     summ = rep.get("summary", {})
     lines: list[object] = []
@@ -2423,7 +2153,7 @@ HTML = r'''<!doctype html>
 *{box-sizing:border-box}body{margin:0;background:linear-gradient(135deg,#050806,#102117 60%,#09110d);color:var(--text);font-family:Arial,Helvetica,sans-serif}button,input,select,textarea{font:inherit}button{cursor:pointer;border:0;border-radius:12px;padding:10px 12px;background:#223a2c;color:var(--text);box-shadow:0 6px 14px var(--shadow)}button:hover{filter:brightness(1.15)}button.primary{background:var(--accent);color:#031007;font-weight:800}button.danger{background:var(--danger);color:white}button.warn{background:var(--warn);color:#1d1600}button.blue{background:var(--blue);color:#04111f}button.ghost{background:transparent;border:1px solid var(--line);box-shadow:none}button:disabled{opacity:.35;cursor:not-allowed}input,select,textarea{width:100%;border:1px solid var(--line);background:#07120d;color:var(--text);border-radius:10px;padding:9px}label{font-size:12px;color:var(--muted);display:block;margin-bottom:5px}.app{min-height:100vh}.top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line);background:rgba(8,17,13,.88);position:sticky;top:0;z-index:10;backdrop-filter:blur(10px)}.brand{display:flex;flex-direction:column}.brand b{font-size:21px}.brand span{font-size:12px;color:var(--muted)}.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.badge{padding:7px 10px;border:1px solid var(--line);border-radius:999px;background:#0e1c14;color:var(--muted)}.wrap{padding:18px;max-width:1500px;margin:0 auto}.tabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}.tab{background:#13231a}.tab.active{background:var(--accent);color:#031007;font-weight:800}.grid{display:grid;grid-template-columns:repeat(3,minmax(280px,1fr));gap:14px}.card{background:linear-gradient(180deg,var(--panel),#0b1510);border:1px solid var(--line);border-radius:18px;padding:14px;box-shadow:0 12px 24px var(--shadow)}.card.on{border-color:var(--accent)}.card.paused{border-color:var(--warn)}.row{display:grid;grid-template-columns:repeat(12,1fr);gap:10px}.col-2{grid-column:span 2}.col-3{grid-column:span 3}.col-4{grid-column:span 4}.col-5{grid-column:span 5}.col-6{grid-column:span 6}.col-8{grid-column:span 8}.col-12{grid-column:span 12}.titleline{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.big{font-size:27px;font-weight:900}.money{font-size:28px;font-weight:900;color:var(--accent)}.muted{color:var(--muted)}.tiny{font-size:12px;color:var(--muted)}.status{font-size:12px;text-transform:uppercase;letter-spacing:.08em;padding:6px 8px;border-radius:999px;background:#1a2c22;color:var(--muted)}.status.running{background:rgba(51,209,122,.16);color:var(--accent)}.status.paused{background:rgba(255,209,102,.16);color:var(--warn)}.players{display:flex;flex-direction:column;gap:7px;margin:10px 0}.player{display:grid;grid-template-columns:1fr auto auto auto;gap:6px;align-items:center;background:#07120d;border:1px solid var(--line);border-radius:12px;padding:8px}.player.off{opacity:.5;text-decoration:line-through}.btns{display:flex;gap:7px;flex-wrap:wrap}.pricebtns{display:flex;gap:7px;flex-wrap:wrap;margin:7px 0}.pricebtns button.active{outline:3px solid #fff;box-shadow:0 0 0 3px rgba(51,209,122,.45)}.pricebtns button.rate-available{background:var(--accent);color:#031007;font-weight:900}.pricebtns button.rate-unavailable{background:#3b4540;color:#aeb8b1;box-shadow:none}.pricebtns button.rate-unavailable:disabled{opacity:1}.pricehint{font-size:12px;color:var(--muted);margin-top:4px}.login{max-width:480px;margin:9vh auto;padding:28px;border-radius:22px;background:var(--panel);border:1px solid var(--line);box-shadow:0 20px 60px var(--shadow)}.login h1{margin-top:0}.toast{position:fixed;right:18px;bottom:18px;padding:13px 16px;border-radius:14px;background:#10291a;border:1px solid var(--accent);display:none;z-index:99;max-width:420px}.toast.err{border-color:var(--danger);background:#2b1111}.tablewrap{overflow:auto;border:1px solid var(--line);border-radius:14px}.report-table{width:100%;border-collapse:collapse;background:#07120d}.report-table th,.report-table td{border-bottom:1px solid var(--line);padding:9px;text-align:left;font-size:13px}.report-table th{background:#14251c;color:var(--muted);position:sticky;top:0}.modal{position:fixed;inset:0;background:rgba(0,0,0,.72);display:none;z-index:50;align-items:center;justify-content:center;padding:20px}.modal .box{background:#f8fff9;color:#07120d;width:min(850px,96vw);max-height:92vh;overflow:auto;border-radius:14px;padding:24px}.invoice{font-family:Arial,Helvetica,sans-serif}.invoice h2{margin:0 0 4px}.invoice .line{display:flex;justify-content:space-between;border-bottom:1px solid #ddd;padding:8px 0}.invoice table{width:100%;border-collapse:collapse;margin-top:14px}.invoice th,.invoice td{border:1px solid #ddd;padding:8px}.invoice th{background:#111;color:white}.invoice .total{font-size:24px;font-weight:900;text-align:right}.closex{float:right;background:#111;color:white}.split{display:grid;grid-template-columns:1.1fr .9fr;gap:14px}.kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.kpi div{background:#07120d;border:1px solid var(--line);border-radius:14px;padding:12px}.kpi b{display:block;font-size:22px;color:var(--accent)}@media(max-width:1050px){.grid{grid-template-columns:repeat(2,minmax(260px,1fr))}.split{grid-template-columns:1fr}.kpi{grid-template-columns:repeat(2,1fr)}}@media(max-width:720px){.grid{grid-template-columns:1fr}.row{grid-template-columns:1fr}.col-2,.col-3,.col-4,.col-5,.col-6,.col-8,.col-12{grid-column:span 1}.top{align-items:flex-start}.actions{justify-content:flex-end}.player{grid-template-columns:1fr 1fr}.money{font-size:22px}}@media print{body{background:white;color:black}.top,.tabs,.btns,.actions,.toast{display:none}.card{box-shadow:none;border:1px solid #ccc;color:black;background:white}.modal{position:static;display:block;background:white}.modal .box{box-shadow:none;max-height:none}.closex{display:none}}
 
 /* Tablet-native touch layer */
-button{min-height:44px;touch-action:manipulation}input,select{min-height:44px}.slotid{display:inline-block;min-width:54px;text-align:center;background:#1d3a2a;border:1px solid var(--accent);border-radius:999px;color:var(--accent);font-weight:900;padding:7px 9px}.no-tax{color:var(--muted);font-size:13px;margin-top:3px}.closegrid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.closegrid .full{grid-column:1/-1}.customBox{border:1px dashed var(--warn);border-radius:12px;padding:10px;margin:7px 0;background:rgba(255,209,102,.08)}.customModeBtns{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:10px 0}.customModeBtn{border-radius:12px;box-shadow:none;border:1px solid rgba(255,209,102,.45);background:#101c15;color:var(--warn);font-weight:900}.customModeBtn.active{background:var(--warn);color:#1d1600;outline:3px solid rgba(255,255,255,.75)}.customValueLine{display:grid;grid-template-columns:1fr;gap:6px}.customValueLine input{border-color:rgba(255,209,102,.55);font-size:22px;font-weight:900}.customReady{display:inline-block;margin-top:8px;padding:6px 9px;border-radius:999px;border:1px solid var(--accent);color:var(--accent);background:rgba(51,209,122,.12);font-weight:900}.tarifTabs{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin:7px 0}.tarifTab{box-shadow:none;border:1px solid var(--line);background:#101c15}.tarifTab.active{background:var(--accent);color:#031007;font-weight:900}.timerBox{border:1px solid var(--warn);background:rgba(255,209,102,.12);border-radius:12px;padding:8px;margin:8px 0}.timerBox.expired{border-color:var(--danger);background:rgba(255,95,87,.12)}.billBox{border:1px solid #cbd5ce;border-radius:12px;overflow:hidden;margin:12px 0}.billBox table{margin:0}.invoice .summaryGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0}.invoice .summaryGrid div{border:1px solid #d6ded8;border-radius:10px;padding:10px;background:#f1f7f3}.invoice .summaryGrid b{display:block;font-size:20px}@media(pointer:coarse){button{min-height:52px;padding:14px 16px}input,select{min-height:52px;font-size:18px}.tabs button{flex:1}.pricebtns button{flex:1 1 45%}.btns button{flex:1 1 45%}.grid{grid-template-columns:repeat(2,minmax(300px,1fr))}}@media(max-width:850px){.grid{grid-template-columns:1fr}.closegrid{grid-template-columns:1fr}}
+button{min-height:44px;touch-action:manipulation}input,select{min-height:44px}.slotid{display:inline-block;min-width:54px;text-align:center;background:#1d3a2a;border:1px solid var(--accent);border-radius:999px;color:var(--accent);font-weight:900;padding:7px 9px}.no-tax{color:var(--muted);font-size:13px;margin-top:3px}.closegrid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.closegrid .full{grid-column:1/-1}.customBox{border:1px dashed var(--warn);border-radius:12px;padding:8px;margin:7px 0;background:rgba(255,209,102,.08)}@media(pointer:coarse){button{min-height:52px;padding:14px 16px}input,select{min-height:52px;font-size:18px}.tabs button{flex:1}.pricebtns button{flex:1 1 45%}.btns button{flex:1 1 45%}.grid{grid-template-columns:repeat(2,minmax(300px,1fr))}}@media(max-width:850px){.grid{grid-template-columns:1fr}.closegrid{grid-template-columns:1fr}}
 
 /* V7 slot multi-select transfer */
 .slotTransfer{border:1px solid var(--line);background:rgba(7,18,13,.72);border-radius:14px;padding:10px;margin:10px 0}.slotTransferTop{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:8px}.slotBtns{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.slotbtn{min-height:62px;border:1px solid var(--line);background:#101b15;box-shadow:none;text-align:center;padding:8px}.slotbtn.live{border-color:var(--accent);color:var(--accent)}.slotbtn.empty{background:#27332d;color:#839287;border-color:#3a4a41}.slotbtn.selected{background:var(--accent);color:#031007;outline:3px solid #fff;font-weight:900}.slotbtn small{display:block;font-size:10px;opacity:.8;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.transferControls{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:8px}.playerEdit{display:grid;grid-template-columns:auto 1fr auto auto auto auto;gap:8px;align-items:center;background:#07120d;border:1px solid var(--line);border-radius:12px;padding:8px}.playerEdit.off{opacity:.5;text-decoration:line-through}@media(pointer:coarse){.slotbtn{min-height:72px;font-size:18px}.transferControls{grid-template-columns:1fr}.playerEdit{grid-template-columns:1fr 1fr}.slotid{width:100%}}@media(max-width:720px){.slotBtns{grid-template-columns:repeat(2,1fr)}.transferControls{grid-template-columns:1fr}.playerEdit{grid-template-columns:1fr}}.startSlotsBox{border:1px solid var(--line);border-radius:14px;padding:10px;margin:8px 0;background:#07120d}.startSlotsBox .slotbtn.selected{background:var(--accent);color:#031007;outline:3px solid #fff}.slotTransfer .slotbtn{touch-action:manipulation}.oldTransferGone{display:none!important}.playerTotal{min-width:118px;border:1px solid var(--line);border-radius:12px;padding:7px 9px;background:#0b1b12;text-align:right}.playerTotal b{display:block;color:var(--accent);font-size:16px}.playerTotal small{display:block;color:var(--muted);font-size:10px;line-height:1.2}.playerTotal.paid{background:rgba(51,209,122,.14);border-color:var(--accent)}.playerTotal.paid b{color:var(--accent)}
@@ -2442,75 +2172,14 @@ button{min-height:44px;touch-action:manipulation}input,select{min-height:44px}.s
 @media(max-width:620px){.floorGrid{grid-template-columns:1fr;grid-template-areas:"t4" "t6" "t8" "t3" "t5" "t7"}.wrap{padding:8px}.top{position:static;align-items:stretch}.brand{min-width:100%}.actions button{flex:1 1 45%}.tabs button{flex:1 1 45%}.card{padding:10px}.slotBtns{grid-template-columns:repeat(2,1fr)}}
 @media(pointer:coarse){.floorGrid{gap:12px}.tableCard{border-radius:20px}.slotBtns{gap:10px}.tableCard button{min-height:54px}.pricebtns button,.btns button,.closegrid button{min-height:56px}.slotbtn{min-height:70px}.top{gap:8px}}
 
-/* Admin console style, adapted from the supplied reference panel */
-.adminShell{max-width:1080px;margin:0 auto;background:#0d0f0d;border:1px solid var(--line);box-shadow:0 18px 40px var(--shadow);position:relative;overflow:hidden}
-.adminShell:before{content:"";position:absolute;inset:0;background-image:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(51,209,122,.025) 2px,rgba(51,209,122,.025) 4px),repeating-linear-gradient(90deg,transparent,transparent 3px,rgba(51,209,122,.018) 3px,rgba(51,209,122,.018) 6px);pointer-events:none}
-.adminShell>*{position:relative;z-index:1}.adminNav{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 18px;border-bottom:1px solid var(--line);background:rgba(13,15,13,.88)}
-.adminBack{box-shadow:none;border:1px solid var(--line);border-radius:3px;background:transparent;color:var(--muted);font-family:Consolas,monospace;text-transform:uppercase;letter-spacing:.1em;font-size:12px}
-.adminTitleMini{font-family:Consolas,monospace;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.2em}.adminBadge{font-family:Consolas,monospace;font-size:11px;letter-spacing:.14em;padding:6px 10px;border:1px solid rgba(255,209,102,.35);color:var(--warn);text-transform:uppercase;background:rgba(255,209,102,.06)}
-.adminHero{padding:24px 18px 20px;border-bottom:1px solid var(--line)}.adminHero h2{margin:0;font-size:clamp(34px,4vw,58px);line-height:.95;text-transform:uppercase;letter-spacing:.04em;font-weight:900}.adminHero p{font-family:Consolas,monospace;color:var(--muted);text-transform:uppercase;letter-spacing:.12em;font-size:12px;margin:8px 0 0}
-.adminSection{padding:18px;border-bottom:1px solid var(--line)}.adminSectionHead{display:flex;align-items:center;gap:10px;margin-bottom:14px}.adminSectionTitle{font-size:13px;font-weight:900;text-transform:uppercase;letter-spacing:.2em;color:var(--muted)}.adminSectionLine{height:1px;background:var(--line);flex:1}
-.adminStatusGrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.adminStatus{background:#141814;border:1px solid var(--line);padding:12px 14px;min-height:76px}.adminStatus span{display:block;font-family:Consolas,monospace;font-size:10px;letter-spacing:.14em;color:var(--muted);text-transform:uppercase}.adminStatus b{display:block;font-size:22px;margin-top:5px;color:var(--text)}.adminStatus b.good{color:var(--accent)}.adminStatus b.warnText{color:var(--warn)}.adminStatus b.blueText{color:var(--blue)}
-.settingRow{display:grid;grid-template-columns:1fr minmax(180px,310px);gap:16px;align-items:center;padding:13px 15px;background:#141814;border:1px solid var(--line);margin-bottom:7px;min-height:66px}.settingName{display:block;font-size:18px;font-weight:900;letter-spacing:.04em}.settingDesc{display:block;margin-top:2px;font-family:Consolas,monospace;font-size:10px;letter-spacing:.1em;color:var(--muted);text-transform:uppercase}.settingControl input,.settingControl select{border-radius:3px;font-family:Consolas,monospace;background:#07120d}.adminActions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.adminActions button,.adminActions a button,.relayGrid button{width:100%;border-radius:3px;font-family:Consolas,monospace;text-transform:uppercase;letter-spacing:.08em;box-shadow:none}
-.pricingAdminGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.priceSetting{background:#141814;border:1px solid var(--line);padding:12px}.priceSetting label{font-family:Consolas,monospace;text-transform:uppercase;letter-spacing:.1em}.priceSetting b{display:block;margin-bottom:8px;font-size:18px}.relayGrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.relayPair{display:grid;grid-template-columns:1fr 1fr;gap:6px;background:#141814;border:1px solid var(--line);padding:8px}.relayPair span{grid-column:1/-1;font-family:Consolas,monospace;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;font-size:11px}.relayPair .on{color:#031007;background:var(--accent)}.relayPair .off{background:#2a1715;color:#ffd7d4;border:1px solid rgba(255,95,87,.5)}
-@media(max-width:950px){.adminStatusGrid,.pricingAdminGrid,.relayGrid{grid-template-columns:repeat(2,1fr)}.adminActions{grid-template-columns:repeat(2,1fr)}.settingRow{grid-template-columns:1fr}}
-@media(max-width:560px){.adminNav{align-items:stretch;flex-direction:column}.adminStatusGrid,.pricingAdminGrid,.relayGrid,.adminActions{grid-template-columns:1fr}}
-
-/* 23.8-inch all-in-one floor mode: six tables visible, no page scrolling */
-.statusStack{display:flex;flex-direction:column;gap:6px;align-items:flex-end}.lightStatus{display:inline-flex;align-items:center;gap:6px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;padding:6px 8px;border-radius:999px;border:1px solid var(--line);background:#101b15;color:var(--muted);white-space:nowrap}.lightStatus .dot{width:9px;height:9px;border-radius:999px;background:#69756c}.lightStatus.on{border-color:rgba(51,209,122,.75);color:var(--accent);background:rgba(51,209,122,.13)}.lightStatus.on .dot{background:var(--accent);box-shadow:0 0 10px rgba(51,209,122,.95)}.lightStatus.off{border-color:rgba(255,95,87,.45);color:#ffb0aa;background:rgba(255,95,87,.08)}.lightStatus.off .dot{background:var(--danger)}
-@media(min-width:1200px) and (min-height:760px){
-  .app.floorMode{height:100vh;overflow:hidden}.app.floorMode .top{min-height:64px;padding:7px 10px}.app.floorMode .brand b{font-size:18px}.app.floorMode .brand span{font-size:11px}.app.floorMode .actions{gap:6px}.app.floorMode .actions button,.app.floorMode .badge{min-height:34px;padding:7px 9px;font-size:12px}.app.floorMode .wrap{height:calc(100vh - 64px);overflow:hidden;padding:8px 10px}.app.floorMode .tabs{height:42px;margin-bottom:6px}.app.floorMode .tabs button{min-height:36px;padding:7px 9px}.app.floorMode .floorGrid{height:calc(100% - 48px);grid-template-rows:repeat(2,minmax(0,1fr));gap:8px;align-items:stretch}.app.floorMode .tableCard{height:100%;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;padding:8px;border-radius:14px;display:flex;flex-direction:column}.app.floorMode .titleline{flex:0 0 auto}.app.floorMode .big{font-size:20px}.app.floorMode .status{font-size:10px;padding:5px 7px}.app.floorMode .lightStatus{font-size:10px;padding:5px 7px}.app.floorMode .money{font-size:20px}.app.floorMode .no-tax,.app.floorMode .tiny{font-size:10px;line-height:1.15}.app.floorMode label{font-size:10px;margin-bottom:3px}.app.floorMode input,.app.floorMode select{min-height:34px;padding:6px 7px;font-size:13px}.app.floorMode button{min-height:34px;padding:6px 8px;font-size:12px;border-radius:9px}.app.floorMode .pricebtns,.app.floorMode .btns{gap:5px;margin:5px 0}.app.floorMode .tarifTabs{gap:5px;margin:5px 0}.app.floorMode .customBox,.app.floorMode .startSlotsBox,.app.floorMode .slotTransfer,.app.floorMode .timerBox{padding:5px;margin:5px 0;border-radius:10px}.app.floorMode .customBox{display:grid;grid-template-columns:1fr 1fr;gap:5px;align-items:end}.app.floorMode .customBox>b{grid-column:1/-1}.app.floorMode .customModeBtns{margin:0;gap:5px}.app.floorMode .customValueLine{gap:3px}.app.floorMode .customValueLine input{font-size:16px}.app.floorMode .customReady{grid-column:1/-1;margin-top:0;padding:4px 7px}.app.floorMode .customBox p.tiny{grid-column:1/-1;margin:0;font-size:9px}.app.floorMode .slotBtns{gap:5px}.app.floorMode .slotbtn{min-height:36px;padding:4px}.app.floorMode .slotbtn small{font-size:9px}.app.floorMode .slotTransferTop{margin-bottom:4px}.app.floorMode .slotTransfer p.tiny{display:none}.app.floorMode .transferControls{gap:5px;margin-top:5px}.app.floorMode .players{flex:1 1 auto;min-height:0;overflow:hidden;margin:5px 0;gap:4px}.app.floorMode .playerEdit{grid-template-columns:auto minmax(0,1fr) 86px 62px 62px 58px;gap:4px;padding:4px;border-radius:9px}.app.floorMode .playerEdit button{min-height:30px;padding:4px;font-size:10px}.app.floorMode .slotid{min-width:40px;padding:5px 6px}.app.floorMode .playerTotal{min-width:86px;padding:4px 5px;border-radius:8px}.app.floorMode .playerTotal b{font-size:12px}.app.floorMode .playerTotal small{font-size:8px}.app.floorMode .row{gap:5px}.app.floorMode .closegrid{gap:5px}.app.floorMode .tableCard>div[style]{height:5px!important}
-}
-
-/* Clean report date/time controls */
-.reportPanel{padding:0;overflow:hidden}.reportHead{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:14px 14px 10px;border-bottom:1px solid var(--line);background:rgba(7,18,13,.55)}.reportHead h2{margin:0}.reportClock{text-align:right;border:1px solid var(--line);border-radius:12px;background:#07120d;padding:8px 10px;min-width:210px}.reportClock span{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.12em}.reportClock b{display:block;color:var(--accent);font-size:18px;margin-top:2px}.reportBody{padding:14px}.reportFilters{display:grid;grid-template-columns:repeat(12,1fr);gap:10px}.reportField{grid-column:span 3;border:1px solid var(--line);border-radius:12px;background:#07120d;padding:10px}.reportField.wide{grid-column:span 6}.reportField label{font-size:11px;text-transform:uppercase;letter-spacing:.1em}.reportField input,.reportField select{border-radius:8px;font-size:16px;font-weight:800;background:#0b1710}.reportActions{grid-column:span 6;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;align-items:end}.reportActions button{width:100%;min-height:48px}.reportSectionTitle{margin:16px 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.12em;font-size:12px;font-weight:900}.reportMeta{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:8px 0 12px}.reportMeta div{border:1px solid var(--line);border-radius:12px;background:#07120d;padding:10px}.reportMeta span{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.1em}.reportMeta b{display:block;color:var(--text);font-size:16px;margin-top:3px;word-break:break-word}.reportNumber{font-size:20px;line-height:1.1;word-break:break-word}.timeCell{font-family:Consolas,monospace;white-space:nowrap}.dateCell{font-family:Consolas,monospace;white-space:nowrap;color:var(--text)}@media(max-width:1050px){.reportHead{flex-direction:column}.reportClock{text-align:left;width:100%}.reportField,.reportField.wide,.reportActions{grid-column:span 12}.reportActions{grid-template-columns:1fr}.reportMeta{grid-template-columns:repeat(2,1fr)}}@media(max-width:620px){.reportMeta{grid-template-columns:1fr}}
-
-/* Unified local + Render desktop floor mode */
-@media(min-width:1100px){
-  html,body{height:100%;overflow:hidden}
-  body{font-size:14px}
-  .app.floorMode{height:100vh;min-height:0;overflow:hidden;display:flex;flex-direction:column}
-  .app.floorMode .top{position:relative;flex:0 0 58px;min-height:58px;padding:8px 12px}
-  .app.floorMode .brand b{font-size:19px;line-height:1.05}.app.floorMode .brand span{font-size:11px}
-  .app.floorMode .actions{gap:7px}.app.floorMode .actions button,.app.floorMode .badge{min-height:38px;padding:8px 10px;font-size:13px;border-radius:10px}
-  .app.floorMode .wrap{width:100%;max-width:none;height:calc(100vh - 58px);min-height:0;overflow:hidden;padding:8px 14px;display:flex;flex-direction:column}
-  .app.floorMode .tabs{flex:0 0 40px;height:40px;margin:0 0 8px;gap:8px}.app.floorMode .tabs button{min-height:38px;padding:8px 14px;font-size:14px;border-radius:11px}
-  .app.floorMode .floorGrid{flex:1;min-height:0;height:auto;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr));gap:10px;align-items:stretch}
-  .app.floorMode .tableCard{height:100%;min-height:0;overflow:hidden;padding:10px;border-radius:14px;font-size:13px;display:flex;flex-direction:column}
-  .app.floorMode .titleline{gap:8px;margin-bottom:4px}.app.floorMode .big{font-size:22px;line-height:1}.app.floorMode .statusStack{gap:5px}.app.floorMode .status,.app.floorMode .lightStatus{font-size:10px;padding:5px 8px}
-  .app.floorMode .money{font-size:24px;line-height:1.05;margin-top:0}.app.floorMode .tiny,.app.floorMode .no-tax{font-size:10.5px;line-height:1.12}
-  .app.floorMode label{font-size:10.5px;margin:3px 0 3px}.app.floorMode input,.app.floorMode select{min-height:34px;padding:6px 8px;font-size:14px;border-radius:9px}.app.floorMode button{min-height:36px;padding:7px 10px;font-size:13px;border-radius:9px}
-  .app.floorMode .btns,.app.floorMode .pricebtns,.app.floorMode .tarifTabs{gap:6px;margin:6px 0}.app.floorMode .pricehint{display:none}
-  .app.floorMode .pricebtns button{min-height:38px;font-size:13px}.app.floorMode .tarifTab{min-height:38px}
-  .app.floorMode .startSlotsBox{padding:6px;margin:6px 0;border-radius:10px}.app.floorMode .startSlotsBox .slotTransferTop{margin-bottom:5px}.app.floorMode .slotBtns{gap:5px}.app.floorMode .slotbtn{min-height:40px;padding:5px}.app.floorMode .slotbtn b{font-size:13px;line-height:1}.app.floorMode .slotbtn small{font-size:9px;line-height:1}
-  .app.floorMode .customBox{display:grid;grid-template-columns:1fr 1fr minmax(150px,2fr);gap:6px;padding:6px;margin:6px 0;border-radius:10px;align-items:end}
-  .app.floorMode .customBox>b{grid-column:1/-1;font-size:14px;line-height:1}
-  .app.floorMode .customModeBtns{grid-column:1/3;margin:0;gap:6px}.app.floorMode .customModeBtn{min-height:40px}.app.floorMode .customValueLine{grid-column:3/4;gap:3px}.app.floorMode .customValueLine input{font-size:16px;min-height:38px}
-  .app.floorMode .customReady{grid-column:1/-1;margin:0;padding:5px 8px;font-size:10px}.app.floorMode .customBox p.tiny{display:none}.app.floorMode .tableCard>div[style]{height:5px!important}
-  .app.floorMode .players{min-height:0;overflow:auto;margin:5px 0;gap:5px}.app.floorMode .playerEdit{grid-template-columns:auto minmax(0,1fr) 92px 64px 64px 58px;gap:5px;padding:5px;border-radius:9px}.app.floorMode .playerEdit button{min-height:32px;padding:5px;font-size:11px}
-  .app.floorMode .slotid{min-width:42px;padding:6px 7px}.app.floorMode .playerTotal{min-width:92px;padding:5px 6px;border-radius:8px}.app.floorMode .playerTotal b{font-size:13px}.app.floorMode .playerTotal small{font-size:8px}.app.floorMode .row{gap:6px}.app.floorMode .closegrid{gap:6px}
-  .app.floorMode .slotTransfer{padding:6px;margin:6px 0}.app.floorMode .slotTransfer p.tiny{display:none}.app.floorMode .transferControls{gap:6px;margin-top:6px}
-}
-@media(min-width:1100px) and (max-width:1350px){
-  .app.floorMode .customBox{grid-template-columns:1fr 1fr}.app.floorMode .customValueLine{grid-column:1/-1}.app.floorMode .customModeBtns{grid-column:1/-1}
-}
-
 
 </style>
 </head>
-<body><div id="app" class="app"><div class="login"><h1>Connexion quart/admin</h1><p class="muted">Chargement du système...</p><p class="tiny">Si cet écran reste bloqué, appuie sur F5. Si le problème continue, utilise le dernier ZIP généré.</p></div></div><div id="toast" class="toast"></div><div id="modal" class="modal"><div class="box"><button class="closex" onclick="closeModal()">X</button><div id="modalBody"></div></div></div>
+<body><div id="app" class="app"></div><div id="toast" class="toast"></div><div id="modal" class="modal"><div class="box"><button class="closex" onclick="closeModal()">X</button><div id="modalBody"></div></div></div>
 <script>
-window.onerror=function(message,source,line,column,error){
-  try{
-    var appBox=document.getElementById('app');
-    if(appBox){
-      appBox.innerHTML='<div class="login"><h1>Erreur interface</h1><p class="muted">Le serveur local a ouvert la page, mais l interface JavaScript a rencontré une erreur.</p><p style="color:#ff5f57;font-weight:900">'+String(message)+'</p><p class="tiny">Ligne '+String(line||'')+' colonne '+String(column||'')+'. Redémarre avec le dernier ZIP.</p></div>';
-    }
-  }catch(e){}
-};
-const T={fr:{subtitle:'Contrôle local - tables 3 à 8',loginTitle:'Connexion quart/admin',password:'Mot de passe',login:'Entrer',logout:'Déconnexion',lang:'EN',allOn:'Toutes lumières ON',allOff:'Toutes lumières OFF',floor:'Tables',reports:'Rapports',admin:'Admin',open:'Ouvrir',close:'Fermer',pause:'Pause',resume:'Reprendre',bill:'Facture',pdf:'PDF',player:'Joueur',players:'Joueurs',add:'Ajouter',remove:'Retirer',update:'Modifier',transfer:'Transférer',transferTable:'Transférer table',to:'Vers',active:'active',off:'fermée',running:'ouverte',paused:'pause',client:'Client',notes:'Notes',payment:'Paiement',cash:'Comptant',card:'Carte',flatUnavailable:'Forfait disponible seulement au bon quart/jour.',daily:'Journalier',shift:'Quart',owner:'Propriétaire',load:'Charger',date:'Date',from:'De',until:'À',pricing:'Tarif',structure:'Structure',search:'Recherche',total:'Total',table:'Table',save:'Sauvegarder',backup:'Sauvegarde',events:'Logs',adminOnly:'Admin seulement',relay:'Lumière',light:'Lumière',lightOn:'Lumière ON',lightOff:'Lumière OFF',on:'ON',closeReport:'Fermer + rapport',closeShift:'Fermer le quart',shiftReportId:'ID rapport quart',dayTotal:'Total du jour',shiftTotal:'Total quart',mustCloseTables:'Fermez les tables ouvertes avant de fermer le quart.',offBtn:'OFF',selectedPlayers:'Joueurs sélectionnés',empty:'Vide',cashout:'Encaisser',cashoutCash:'Encaisser CASH',cashoutCard:'Encaisser CARTE',alreadyPaid:'Payé',lastBill:'Dernière facture',maxPlayers:'max 4 joueurs',startPlayers:'Joueurs au départ',selected:'sélectionné(s)',customTimer:'Timer custom',amountBtn:'$ MONTANT',minutesBtn:'MINUTES',amountValue:'Montant en $',minutesValue:'Nombre de minutes',customHelp:'Choisis $ ou MINUTES, entre la valeur, puis appuie sur Ouvrir. Aucun mot de passe.'},en:{subtitle:'Local control - tables 3 to 8',loginTitle:'Shift/admin login',password:'Password',login:'Enter',logout:'Logout',lang:'FR',allOn:'All lights ON',allOff:'All lights OFF',floor:'Tables',reports:'Reports',admin:'Admin',open:'Open',close:'Close',pause:'Pause',resume:'Resume',bill:'Bill',pdf:'PDF',player:'Player',players:'Players',add:'Add',remove:'Remove',update:'Update',transfer:'Transfer',transferTable:'Transfer table',to:'To',active:'active',off:'closed',running:'open',paused:'paused',client:'Client',notes:'Notes',payment:'Payment',cash:'Cash',card:'Card',flatUnavailable:'Flat rate only available on the correct shift/day.',daily:'Daily',shift:'Shift',owner:'Owner',load:'Load',date:'Date',from:'From',until:'To',pricing:'Pricing',structure:'Structure',search:'Search',total:'Total',table:'Table',save:'Save',backup:'Backup',events:'Logs',adminOnly:'Admin only',relay:'Light',light:'Light',lightOn:'Light ON',lightOff:'Light OFF',on:'ON',closeReport:'Close + report',closeShift:'Close shift',shiftReportId:'Shift report ID',dayTotal:'Day total',shiftTotal:'Shift total',mustCloseTables:'Close all open tables before closing the shift.',offBtn:'OFF',selectedPlayers:'Selected players',empty:'Empty',cashout:'Cash out',cashoutCash:'Cash out CASH',cashoutCard:'Cash out CARD',alreadyPaid:'Paid',lastBill:'Last bill',maxPlayers:'max 4 players',startPlayers:'Starting players',selected:'selected',customTimer:'Custom timer',amountBtn:'$ AMOUNT',minutesBtn:'MINUTES',amountValue:'Amount in $',minutesValue:'Minutes',customHelp:'Choose $ or MINUTES, enter the value, then press Open. No password.'}};
-let app={data:null,lang:localStorage.pool_lang||'fr',tab:'floor',selectedPrice:{},customRate:{},customMode:{},rateTab:{},startSlots:{},transferSlots:{},report:null,loginRendered:false,loginBusy:false,busy:0,noAuthSeen:0};
-function tr(k){return (T[app.lang]&&T[app.lang][k])||k}function $(s){return document.querySelector(s)}function esc(s){return String(s==null?'':s).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}function money(n){let c=(app.data&&app.data.config&&app.data.config.currency)||'$';return c+Number(n||0).toFixed(2)}function dur(sec){sec=Number(sec||0);let h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60);return h+'h '+String(m).padStart(2,'0')+'m'}function timerText(sec){sec=Math.max(0,Number(sec||0));let m=Math.floor(sec/60),s=Math.floor(sec%60);return m+':'+String(s).padStart(2,'0')}function toast(msg,err=false){let t=$('#toast');t.textContent=msg;t.className='toast'+(err?' err':'');t.style.display='block';setTimeout(()=>t.style.display='none',3200)}
+const T={fr:{subtitle:'Contrôle local - tables 3 à 8',loginTitle:'Connexion quart/admin',password:'Mot de passe',login:'Entrer',logout:'Déconnexion',lang:'EN',allOn:'Tout allumer',allOff:'Tout éteindre',floor:'Tables',reports:'Rapports',admin:'Admin',open:'Ouvrir',close:'Fermer',pause:'Pause',resume:'Reprendre',bill:'Facture',pdf:'PDF',player:'Joueur',players:'Joueurs',add:'Ajouter',remove:'Retirer',update:'Modifier',transfer:'Transférer',transferTable:'Transférer table',to:'Vers',active:'active',off:'fermée',running:'ouverte',paused:'pause',client:'Client',notes:'Notes',payment:'Paiement',cash:'Comptant',card:'Carte',flatUnavailable:'Forfait disponible seulement au bon quart/jour.',daily:'Journalier',shift:'Quart',owner:'Propriétaire',load:'Charger',date:'Date',from:'De',until:'À',pricing:'Tarif',structure:'Structure',search:'Recherche',total:'Total',table:'Table',save:'Sauver',backup:'Backup',events:'Logs',adminOnly:'Admin seulement',relay:'Relais',on:'ON',closeReport:'Close & Report',closeShift:'Fermer le quart',shiftReportId:'ID rapport quart',dayTotal:'Total du jour',shiftTotal:'Total quart',mustCloseTables:'Fermez les tables ouvertes avant de fermer le quart.',offBtn:'OFF',selectedPlayers:'Joueurs sélectionnés',empty:'Vide',cashout:'Encaisser',cashoutCash:'Encaisser CASH',cashoutCard:'Encaisser CARTE',alreadyPaid:'Payé'},en:{subtitle:'Local control - tables 3 to 8',loginTitle:'Shift/admin login',password:'Password',login:'Enter',logout:'Logout',lang:'FR',allOn:'All on',allOff:'All off',floor:'Tables',reports:'Reports',admin:'Admin',open:'Open',close:'Close',pause:'Pause',resume:'Resume',bill:'Bill',pdf:'PDF',player:'Player',players:'Players',add:'Add',remove:'Remove',update:'Update',transfer:'Transfer',transferTable:'Transfer table',to:'To',active:'active',off:'closed',running:'open',paused:'paused',client:'Client',notes:'Notes',payment:'Payment',cash:'Cash',card:'Card',flatUnavailable:'Flat rate only available on the correct shift/day.',daily:'Daily',shift:'Shift',owner:'Owner',load:'Load',date:'Date',from:'From',until:'To',pricing:'Pricing',structure:'Structure',search:'Search',total:'Total',table:'Table',save:'Save',backup:'Backup',events:'Logs',adminOnly:'Admin only',relay:'Relay',on:'ON',closeReport:'Close & Report',closeShift:'Close shift',shiftReportId:'Shift report ID',dayTotal:'Day total',shiftTotal:'Shift total',mustCloseTables:'Close all open tables before closing the shift.',offBtn:'OFF',selectedPlayers:'Joueurs sélectionnés',empty:'Empty',cashout:'Cash out',cashoutCash:'Cash out CASH',cashoutCard:'Cash out CARD',alreadyPaid:'Paid'}};
+let app={data:null,lang:localStorage.pool_lang||'fr',tab:'floor',selectedPrice:{},customRate:{},startSlots:{},transferSlots:{},report:null,loginRendered:false,loginBusy:false,busy:0,noAuthSeen:0};
+function tr(k){return (T[app.lang]&&T[app.lang][k])||k}function $(s){return document.querySelector(s)}function esc(s){return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}function money(n){let c=app.data?.config?.currency||'$';return c+Number(n||0).toFixed(2)}function dur(sec){sec=Number(sec||0);let h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60);return h+'h '+String(m).padStart(2,'0')+'m'}function toast(msg,err=false){let t=$('#toast');t.textContent=msg;t.className='toast'+(err?' err':'');t.style.display='block';setTimeout(()=>t.style.display='none',3200)}
 function applyState(s){if(!s)return;if(!s.auth&&app.data&&app.data.auth)s.auth=app.data.auth;app.data=s;app.noAuthSeen=0;}
 async function api(path,body=null){let opt={credentials:'same-origin'};if(body!==null){opt.method='POST';opt.headers={'Content-Type':'application/json'};opt.body=JSON.stringify(body)}let r=await fetch(path,opt);let ct=r.headers.get('content-type')||'';let d=ct.includes('application/json')?await r.json():await r.text();if(!r.ok||d.ok===false)throw new Error(d.error||d.message||('HTTP '+r.status));return d}
 async function refresh(silent=false){
@@ -2536,18 +2205,15 @@ function render(){
   let role=isAdmin?'Admin':app.data.auth.label;
   let adminTabs=isAdmin?`<button class="tab ${app.tab==='reports'?'active':''}" onclick="app.tab='reports';render()">${tr('reports')}</button><button class="tab ${app.tab==='admin'?'active':''}" onclick="app.tab='admin';render()">${tr('admin')}</button>`:'';
   let body=app.tab==='floor'?floorHTML():(isAdmin&&app.tab==='reports')?reportsHTML():(isAdmin&&app.tab==='admin')?adminHTML():floorHTML();
-  let liveDate=new Date(app.data.server_time||Date.now());
-  let clock=`${liveDate.toLocaleDateString()} ${liveDate.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;
-  $('#app').className='app '+(app.tab==='floor'?'floorMode':'pageMode');
-  $('#app').innerHTML=`<div class="top"><div class="brand"><b>SayF Pool Control</b><span>${tr('subtitle')} · ${esc(app.data.current_shift.id.toUpperCase())} ${esc(app.data.current_shift.business_date)}</span></div><div class="actions"><span class="badge">${role}</span><span class="badge">${esc(clock)}</span><button class="ghost" onclick="toggleLang()">${tr('lang')}</button><button class="primary" onclick="allTables(true)">${tr('allOn')}</button><button class="warn" onclick="allTables(false)">${tr('allOff')}</button><button class="blue" onclick="closeAndReport()">${tr('closeReport')}</button><button class="danger" onclick="logout()">${tr('logout')}</button></div></div><div class="wrap"><div class="tabs"><button class="tab ${app.tab==='floor'?'active':''}" onclick="app.tab='floor';render()">${tr('floor')}</button>${adminTabs}</div>${body}</div>`
+  $('#app').innerHTML=`<div class="top"><div class="brand"><b>SayF Pool Control</b><span>${tr('subtitle')} · ${esc(app.data.current_shift.id.toUpperCase())} ${esc(app.data.current_shift.business_date)}</span></div><div class="actions"><span class="badge">${role}</span><button class="ghost" onclick="toggleLang()">${tr('lang')}</button><button class="primary" onclick="allTables(true)">${tr('allOn')}</button><button class="warn" onclick="allTables(false)">${tr('allOff')}</button><button class="blue" onclick="closeAndReport()">${tr('closeReport')}</button><button class="danger" onclick="logout()">${tr('logout')}</button></div></div><div class="wrap"><div class="tabs"><button class="tab ${app.tab==='floor'?'active':''}" onclick="app.tab='floor';render()">${tr('floor')}</button>${adminTabs}</div>${body}</div>`
 }
-function renderLogin(){app.loginRendered=true;$('#app').className='app pageMode';$('#app').innerHTML=`<div class="login"><h1>${tr('loginTitle')}</h1><p class="muted">Connexion locale protégée. Le champ ne se valide jamais pendant la frappe.</p><label>${tr('password')}</label><form id="loginForm" onsubmit="event.preventDefault();login();return false;"><input id="pw" type="password" autofocus autocomplete="off" autocapitalize="off" spellcheck="false"><div style="height:12px"></div><div class="btns"><button id="loginBtn" class="primary" type="submit">${tr('login')}</button><button class="ghost" type="button" onclick="toggleLang()">${tr('lang')}</button></div><p class="tiny">AM/am = quart AM · PM/pm = quart PM · admin = propriétaire</p></form></div>`;setTimeout(()=>{let p=$('#pw');if(p)p.focus()},50)}
+function renderLogin(){app.loginRendered=true;$('#app').innerHTML=`<div class="login"><h1>${tr('loginTitle')}</h1><p class="muted">Connexion locale protégée. Le champ ne se valide jamais pendant la frappe.</p><label>${tr('password')}</label><form id="loginForm" onsubmit="event.preventDefault();login();return false;"><input id="pw" type="password" autofocus autocomplete="off" autocapitalize="off" spellcheck="false"><div style="height:12px"></div><div class="btns"><button id="loginBtn" class="primary" type="submit">${tr('login')}</button><button class="ghost" type="button" onclick="toggleLang()">${tr('lang')}</button></div><p class="tiny">AM/am = quart AM · PM/pm = quart PM · admin = propriétaire</p></form></div>`;setTimeout(()=>$('#pw')?.focus(),50)}
 async function login(){
   if(app.loginBusy)return;
   let pwEl=$('#pw');
   let btn=$('#loginBtn');
-  let password=((pwEl&&pwEl.value)||'').trim();
-  if(!password){toast('Mot de passe requis.',true);if(pwEl)pwEl.focus();return}
+  let password=(pwEl?.value||'').trim();
+  if(!password){toast('Mot de passe requis.',true);pwEl?.focus();return}
   app.loginBusy=true;if(btn)btn.disabled=true;
   try{let d=await api('/api/login',{password});applyState(d.state);app.loginRendered=false;toast('OK');render()}
   catch(e){toast(e.message,true);if(pwEl){pwEl.focus();pwEl.select()}}
@@ -2572,58 +2238,37 @@ async function closeShiftNow(){
   }catch(e){toast(e.message,true)}
 }
 function floorHTML(){let order={4:1,6:2,8:3,3:4,5:5,7:6};let tables=Object.values(app.data.state.tables).sort((a,b)=>(order[a.number]||99)-(order[b.number]||99)||a.number-b.number);return `<div class="grid floorGrid">${tables.map(tableCard).join('')}</div>`}
-function activeRateTab(n){let live=((app.data&&app.data.current_shift&&app.data.current_shift.id)||'am').toLowerCase();let tab=app.rateTab[n]||live;return ['am','pm','custom'].includes(tab)?tab:live}
-function setRateTab(n,tab){app.rateTab[n]=tab;if(tab==='custom'){app.selectedPrice[n]='custom'}else{delete app.customRate[n];app.selectedPrice[n]=null}render()}
 function priceButtons(table){
-  let catalog=(app.data.pricing_catalog&&app.data.pricing_catalog.length?app.data.pricing_catalog:((app.data.config&&app.data.config.pricing_options)||[]).map(o=>Object.assign({},o,{available:(app.data.allowed_pricing||[]).some(a=>a.id===o.id)})));
-  let tab=activeRateTab(table.number);
-  let tabBtns=['am','pm','custom'].map(x=>`<button class="tarifTab ${tab===x?'active':''}" onclick="setRateTab(${table.number},'${x}')">${x==='custom'?'Custom':x.toUpperCase()}</button>`).join('');
-  if(tab==='custom'){
-    let cr=app.customRate[table.number];
-    let kind=app.customMode[table.number]||((cr&&cr.kind==='timer_minutes')?'timer_minutes':'timer_amount');
-    let value=cr?(kind==='timer_minutes'?(cr.minutes!=null?cr.minutes:(cr.amount||'')):(cr.amount!=null?cr.amount:(cr.minutes||''))):'';
-    let ready=value?`<span class="customReady">Prêt: ${kind==='timer_minutes'?esc(value)+' min':money(value)}</span>`:'';
-    app.selectedPrice[table.number]='custom';
-    return `<div class="tarifTabs">${tabBtns}</div><div class="customBox"><b>${tr('customTimer')}</b><div class="customModeBtns"><button type="button" class="customModeBtn ${kind==='timer_amount'?'active':''}" onclick="setCustomMode(${table.number},'timer_amount')">${tr('amountBtn')}</button><button type="button" class="customModeBtn ${kind==='timer_minutes'?'active':''}" onclick="setCustomMode(${table.number},'timer_minutes')">${tr('minutesBtn')}</button></div><div class="customValueLine"><label>${kind==='timer_minutes'?tr('minutesValue'):tr('amountValue')}</label><input id="custom_value_${table.number}" type="number" step="${kind==='timer_minutes'?'1':'0.05'}" min="0" value="${esc(value)}" placeholder="${kind==='timer_minutes'?'ex: 90':'ex: 15'}" oninput="updateCustomDraft(${table.number})"></div>${ready}<p class="tiny">${tr('customHelp')}</p></div>`;
-  }
-  let list=catalog.filter(o=>String(o.shift||'').toLowerCase()===tab);
-  let available=list.filter(o=>o.available);
-  let current=list.find(o=>o.id===app.selectedPrice[table.number]);
-  if((!current||(!current.available&&app.data.auth.role!=='admin'))&&available[0])app.selectedPrice[table.number]=(available.find(o=>o.kind==='hourly')||available[0]).id;
-  let standard=list.map(o=>{
-    let av=!!o.available||app.data.auth.role==='admin';
+  let catalog=(app.data.pricing_catalog&&app.data.pricing_catalog.length?app.data.pricing_catalog:(app.data.config?.pricing_options||[]).map(o=>({...o,available:(app.data.allowed_pricing||[]).some(a=>a.id===o.id)})));
+  let available=catalog.filter(o=>o.available);
+  let current=catalog.find(o=>o.id===app.selectedPrice[table.number]);
+  if((!current||!current.available)&&available[0])app.selectedPrice[table.number]=(available.find(o=>o.kind==='hourly')||available[0]).id;
+  let standard=catalog.map(o=>{
+    let av=!!o.available;
     let active=app.selectedPrice[table.number]===o.id;
     let cls=(av?'rate-available':'rate-unavailable')+(active?' active':'');
     let disabled=av?'':'disabled';
     let click=av?`onclick="app.selectedPrice[${table.number}]='${o.id}';delete app.customRate[${table.number}];render()"`:'';
     return `<button class="${cls}" ${disabled} ${click}>${esc(o[app.lang]||o.id)}</button>`;
   }).join('');
-  return `<div class="tarifTabs">${tabBtns}</div><div class="pricebtns">${standard||'<span class="muted">Aucun tarif dans cet onglet.</span>'}</div><div class="pricehint">Onglet auto: ${esc(((app.data&&app.data.current_shift&&app.data.current_shift.id)||'am').toUpperCase())}. Vert = disponible maintenant · gris = non disponible.</div>`
+  let extraAvailable=catalog.some(o=>o.available&&Number(o.extra_player_fee||0)===7);
+  let extraBtn=`<button class="${extraAvailable?'rate-available':'rate-unavailable'}" ${extraAvailable?`onclick="toast('Extra joueur: +7$ appliqué automatiquement avec les tarifs AM.')"`:'disabled'}>+7$ joueur extra</button>`;
+  let cr=app.customRate[table.number];
+  let customLabel=cr?`CUSTOM ${cr.kind==='flat'?'forfait':'$/h'} ${money(cr.amount)}`:'Tarif custom';
+  return `<div class="pricebtns">${extraBtn}${standard}<button class="warn ${app.selectedPrice[table.number]==='custom'?'active':''}" onclick="customRate(${table.number})">${customLabel}</button></div><div class="pricehint">Vert = disponible maintenant · gris = non disponible à ce quart/jour.</div>${cr?`<div class="customBox">Custom actif: <b>${customLabel}</b> · mot de passe validé</div>`:''}`
 }
-function readCustomRate(n,showError){
-  let valueEl=$(`#custom_value_${n}`);
-  let kind=app.customMode[n]||((app.customRate[n]&&app.customRate[n].kind)==='timer_minutes'?'timer_minutes':'timer_amount');
-  let value=Number((valueEl&&valueEl.value)||0);
-  if(!value||value<=0){if(showError)toast(kind==='timer_minutes'?'Minutes invalides.':'Montant invalide.',true);return null}
-  return kind==='timer_minutes'?{kind:'timer_minutes',minutes:value}:{kind:'timer_amount',amount:value};
+function customRate(n){
+  let pw=prompt('Mot de passe tarif custom','');
+  if(pw!=='pool'){toast('Mot de passe custom invalide.',true);return}
+  let kind=(prompt('Type: h = horaire, f = forfait','h')||'h').toLowerCase().startsWith('f')?'flat':'hourly';
+  let amount=Number(prompt(kind==='flat'?'Montant forfait':'Montant par heure','20'));
+  if(!amount||amount<=0){toast('Montant invalide.',true);return}
+  app.customRate[n]={kind,amount,password:pw};app.selectedPrice[n]='custom';render();
 }
-function setCustomMode(n,kind){
-  let valueEl=$(`#custom_value_${n}`);
-  let value=Number((valueEl&&valueEl.value)||0);
-  app.customMode[n]=kind==='timer_minutes'?'timer_minutes':'timer_amount';
-  if(value>0){app.customRate[n]=app.customMode[n]==='timer_minutes'?{kind:'timer_minutes',minutes:value}:{kind:'timer_amount',amount:value}}
-  app.selectedPrice[n]='custom';
-  render();
-}
-function updateCustomDraft(n){
-  let cr=readCustomRate(n,false);
-  if(cr){app.customRate[n]=cr;app.selectedPrice[n]='custom'}
-}
-function lightStatusHTML(t){let lit=!!t.relay_on;return `<span class="lightStatus ${lit?'on':'off'}"><span class="dot"></span>${lit?tr('lightOn'):tr('lightOff')}</span>`}
-function tableCard(t){let on=t.status!=='off';let cls=t.status==='paused'?'paused':on?'on':'';return `<div class="card tableCard table-${t.number} ${cls}" data-table="${t.number}"><div class="titleline"><div><div class="big">${esc(t.name||('Table '+t.number))}</div><div class="tiny">${tr('light')} CH${esc(t.relay_channel||'')} · ${tr('maxPlayers')}</div></div><div class="statusStack"><span class="status ${esc(t.status)}">${tr(t.status)||t.status}</span>${lightStatusHTML(t)}</div></div>${on?openTableHTML(t):closedTableHTML(t)}</div>`}
+function tableCard(t){let on=t.status!=='off';let cls=t.status==='paused'?'paused':on?'on':'';return `<div class="card tableCard table-${t.number} ${cls}" data-table="${t.number}"><div class="titleline"><div><div class="big">${esc(t.name||('Table '+t.number))}</div><div class="tiny">Relais ${esc(t.relay_channel||'')} · max 4 joueurs</div></div><span class="status ${esc(t.status)}">${tr(t.status)||t.status}</span></div>${on?openTableHTML(t):closedTableHTML(t)}</div>`}
 function ensureStartSlots(n){
   let arr=(app.startSlots[n]||[1]).map(Number).filter(x=>x>=1&&x<=4);
-  arr=Array.from(new Set(arr)).sort((a,b)=>a-b);
+  arr=[...new Set(arr)].sort((a,b)=>a-b);
   if(!arr.length)arr=[1];
   app.startSlots[n]=arr;
   return arr;
@@ -2637,7 +2282,7 @@ function toggleStartSlot(n,slot){
   }else{
     arr.push(slot);
   }
-  app.startSlots[n]=Array.from(new Set(arr)).sort((a,b)=>a-b);
+  app.startSlots[n]=[...new Set(arr)].sort((a,b)=>a-b);
   render();
 }
 function startSlotButtons(t){
@@ -2646,22 +2291,15 @@ function startSlotButtons(t){
     let sel=selected.includes(slot);
     return `<button type="button" class="slotbtn live ${sel?'selected':''}" onclick="toggleStartSlot(${t.number},${slot})"><b>P${slot}</b><small>${sel?'Actif':'Tap'}</small></button>`;
   }).join('');
-  return `<div class="startSlotsBox"><div class="slotTransferTop"><b>${tr('startPlayers')}</b><span class="tiny">${selected.length}/4 ${tr('selected')}</span></div><div class="slotBtns">${btns}</div></div>`;
+  return `<div class="startSlotsBox"><div class="slotTransferTop"><b>Joueurs au départ</b><span class="tiny">${selected.length}/4 sélectionné(s)</span></div><div class="slotBtns">${btns}</div></div>`;
 }
 function closedTableHTML(t){
-  return `<div style="height:10px"></div><div class="money">${money(t.last_total||0)}</div><div class="tiny">${tr('lastBill')}</div><div style="height:10px"></div><label>${tr('client')}</label><input id="client_${t.number}" placeholder="Optionnel" inputmode="text">${startSlotButtons(t)}<label>${tr('pricing')}</label>${priceButtons(t)}<div class="btns"><button class="primary" onclick="startTable(${t.number})">${tr('open')}</button><button class="ghost" onclick="relay(${t.number},true)">${tr('relay')} ${tr('on')}</button><button class="ghost" onclick="relay(${t.number},false)">${tr('relay')} ${tr('offBtn')}</button></div>`
+  return `<div style="height:10px"></div><div class="money">${money(t.last_total||0)}</div><div class="tiny">Dernière facture / last bill</div><div style="height:10px"></div><label>${tr('client')}</label><input id="client_${t.number}" placeholder="Optionnel" inputmode="text">${startSlotButtons(t)}<label>${tr('pricing')}</label>${priceButtons(t)}<div class="btns"><button class="primary" onclick="startTable(${t.number})">${tr('open')}</button><button class="ghost" onclick="relay(${t.number},true)">${tr('relay')} ${tr('on')}</button><button class="ghost" onclick="relay(${t.number},false)">${tr('relay')} ${tr('offBtn')}</button></div>`
 }
 function openTableHTML(t){
   let active=activePlayers(t).length;
   let addDisabled=active>=4?'disabled':'';
-  let timer='';
-  if(t.pricing_kind==='timer'){
-    timer=`<div class="timerBox ${t.timer_expired?'expired':''}"><b>${t.timer_expired?'Temps terminé - lumière OFF':'Custom timer'}</b><div>${t.timer_expired?'Reprendre au tarif horaire courant ou fermer la facture.':'Temps restant: '+timerText(t.timer_remaining_seconds)}</div>${t.timer_warning&&!t.timer_expired?'<div class="tiny">Alerte 3 minutes: la lumière doit clignoter.</div>':''}</div>`;
-  }
-  let addLabel=t.pricing_id==='am_flat'?'+7$ joueur':tr('add');
-  let addClass=t.pricing_id==='am_flat'?'primary':'ghost';
-  let runBtn=t.timer_expired?`<button class="primary" onclick="resumeHourly(${t.number})">Reprendre tarif horaire</button>`:(t.status==='running'?`<button class="warn" onclick="pause(${t.number})">${tr('pause')}</button>`:`<button class="primary" onclick="resume(${t.number})">${tr('resume')}</button>`);
-  return `<div style="height:10px"></div><div class="money">${money(t.due_total!=null?t.due_total:t.total)}</div><div class="no-tax">À encaisser sans taxes: <b>${money((t.due_without_tax!=null?t.due_without_tax:t.total_without_tax)||0)}</b> · taxes incluses: ${money((t.due_tax_included!=null?t.due_tax_included:t.tax_included)||0)} · payé: ${money(t.paid_total||0)} · session: ${money(t.total||0)}</div><div class="tiny">${dur(t.elapsed_seconds)} · ${esc(t.pricing_name_fr||t.pricing_id)} · ${active}/4 ${tr('players')} · totals joueurs en direct</div>${timer}${slotTransferHTML(t)}<div class="players">${visiblePlayers(t).map(p=>playerHTML(t,p)).join('')}</div><div class="row"><div class="col-8"><input id="newp_${t.number}" placeholder="Nom joueur optionnel" inputmode="text"></div><div class="col-4"><button class="${addClass}" ${addDisabled} style="width:100%" onclick="addPlayer(${t.number})">${addLabel}</button></div></div><div style="height:10px"></div><div class="btns"><button class="ghost" onclick="billPreview(${t.number})">${tr('bill')}</button><a target="_blank" href="/api/pdf/active?table=${t.number}"><button class="ghost">${tr('pdf')}</button></a>${runBtn}</div><div style="height:10px"></div><div class="closegrid"><button class="danger" onclick="closeTable(${t.number},'paid')">Fermer PAYÉ</button><button class="ghost" onclick="closeTable(${t.number},'unpaid')">Fermer NON PAYÉ</button></div>`
+  return `<div style="height:10px"></div><div class="money">${money(t.due_total??t.total)}</div><div class="no-tax">À encaisser sans taxes: <b>${money((t.due_without_tax??t.total_without_tax)||0)}</b> · taxes incluses: ${money((t.due_tax_included??t.tax_included)||0)} · payé: ${money(t.paid_total||0)} · session: ${money(t.total||0)}</div><div class="tiny">${dur(t.elapsed_seconds)} · ${esc(t.pricing_name_fr||t.pricing_id)} · ${active}/4 ${tr('players')} · totals joueurs en direct</div>${slotTransferHTML(t)}<div class="players">${visiblePlayers(t).map(p=>playerHTML(t,p)).join('')}</div><div class="row"><div class="col-8"><input id="newp_${t.number}" placeholder="Nom joueur optionnel" inputmode="text"></div><div class="col-4"><button class="primary" ${addDisabled} style="width:100%" onclick="addPlayer(${t.number})">${tr('add')}</button></div></div><div style="height:10px"></div><div class="btns"><button class="ghost" onclick="billPreview(${t.number})">${tr('bill')}</button><a target="_blank" href="/api/pdf/active?table=${t.number}"><button class="ghost">${tr('pdf')}</button></a>${t.status==='running'?`<button class="warn" onclick="pause(${t.number})">${tr('pause')}</button>`:`<button class="primary" onclick="resume(${t.number})">${tr('resume')}</button>`}</div><div style="height:10px"></div><div class="closegrid"><button class="danger" onclick="closeTable(${t.number},'cash')">Fermer CASH</button><button class="danger" onclick="closeTable(${t.number},'card')">Fermer CARTE</button><button class="ghost full" onclick="closeTable(${t.number},'unpaid')">Fermer NON PAYÉ</button></div>`
 }
 function activePlayers(t){return (t.players||[]).filter(p=>p.active!==false)}
 function visiblePlayers(t){return (t.players||[]).filter(p=>p.active!==false||p.cashed_out||p.cashout_bill_number)}
@@ -2669,7 +2307,7 @@ function playerSlot(p){let m=String(p.id||'').match(/P(\d+)$/);return Number(p.s
 function selectedSlots(t){
   let valid=new Set(activePlayers(t).map(p=>playerSlot(p)));
   let arr=(app.transferSlots[t.number]||[]).map(Number).filter(slot=>valid.has(slot));
-  arr=Array.from(new Set(arr)).sort((a,b)=>a-b);
+  arr=[...new Set(arr)].sort((a,b)=>a-b);
   app.transferSlots[t.number]=arr;
   return arr;
 }
@@ -2680,13 +2318,13 @@ function selectedIds(t){
 function toggleSlot(tn,slot){
   slot=Number(slot);
   if(!slot)return;
-  let table=(app.data&&app.data.state&&app.data.state.tables&&(app.data.state.tables[String(tn)]||app.data.state.tables[tn]))||null;
+  let table=app.data?.state?.tables?.[String(tn)]||app.data?.state?.tables?.[tn];
   if(!table)return;
   let valid=new Set(activePlayers(table).map(p=>playerSlot(p)));
   if(!valid.has(slot))return;
   let arr=(app.transferSlots[tn]||[]).map(Number);
-  app.transferSlots[tn]=arr.includes(slot)?arr.filter(x=>x!==slot):arr.concat([slot]);
-  app.transferSlots[tn]=Array.from(new Set(app.transferSlots[tn])).sort((a,b)=>a-b);
+  app.transferSlots[tn]=arr.includes(slot)?arr.filter(x=>x!==slot):[...arr,slot];
+  app.transferSlots[tn]=[...new Set(app.transferSlots[tn])].sort((a,b)=>a-b);
   render();
 }
 function slotTransferHTML(t){
@@ -2710,20 +2348,12 @@ async function startTable(n){
   let names=slots.map(slot=>'Joueur '+slot);
   let client=$('#client_'+n).value||names[0]||'';
   let body={table:n,client,players:names,player_slots:slots,pricing_id:app.selectedPrice[n]};
-  if(activeRateTab(n)==='custom')app.selectedPrice[n]='custom';
-  if(app.selectedPrice[n]==='custom'){
-    let cr=readCustomRate(n,true)||app.customRate[n];
-    if(!cr)return;
-    app.customRate[n]=cr;
-    body.pricing_id='custom';
-    body.custom_rate={kind:cr.kind,amount:cr.amount,minutes:cr.minutes};
-  }
+  if(app.selectedPrice[n]==='custom'&&app.customRate[n]){body.custom_rate={kind:app.customRate[n].kind,amount:app.customRate[n].amount,password:app.customRate[n].password};body.custom_password=app.customRate[n].password;}
   app.busy++;
   try{let d=await api('/api/table/start',body);applyState(d.state);app.transferSlots[n]=[];toast(d.message);render()}catch(e){toast(e.message,true)}finally{app.busy=Math.max(0,app.busy-1)}
 }
 async function pause(n){try{let d=await api('/api/table/pause',{table:n});applyState(d.state);toast(d.message);render()}catch(e){toast(e.message,true)}}
 async function resume(n){try{let d=await api('/api/table/resume',{table:n});applyState(d.state);toast(d.message);render()}catch(e){toast(e.message,true)}}
-async function resumeHourly(n){try{let d=await api('/api/table/resume_hourly',{table:n});applyState(d.state);toast(d.message);render()}catch(e){toast(e.message,true)}}
 async function closeTable(n,pm='cash'){try{let d=await api('/api/table/stop',{table:n,payment_method:pm});applyState(d.state);toast(d.message);showInvoice(d.receipt);render()}catch(e){toast(e.message,true)}}
 async function cashoutPlayer(t,pid,pm='cash'){
   try{
@@ -2739,7 +2369,7 @@ async function transferSelectedPlayers(t){
   if(!src){toast('Table source introuvable.',true);return}
   let ids=selectedIds(src);
   if(!ids.length){toast('Sélectionne P1/P2/P3/P4 avant de transférer.',true);return}
-  let toEl=$('#multi_to_'+t);let to=Number((toEl&&toEl.value)||0);
+  let to=Number($('#multi_to_'+t)?.value||0);
   let dst=app.data.state.tables[String(to)]||app.data.state.tables[to];
   if(!dst||to===t){toast('Table destination invalide.',true);return}
   let srcActive=activePlayers(src).length;
@@ -2767,59 +2397,11 @@ async function transferSelectedPlayers(t){
 }
 async function relay(t,on){try{await api('/api/relay/set',{table:t,on});toast('OK');refresh(true)}catch(e){toast(e.message,true)}}
 async function billPreview(t){try{let d=await api('/api/bill/active?table='+t);showInvoice(d.bill)}catch(e){toast(e.message,true)}}
-function showInvoice(r){
-  let cfg=app.data.config;
-  let payment=r.preview?'Préfacture':(r.paid?'Payé':'Non payé');
-  let timer=r.pricing_kind==='timer'?`<div class="line"><span>Minuterie custom</span><b>${timerText(r.timer_remaining_seconds)} restant / ${dur(r.custom_duration_seconds)}</b></div>`:'';
-  let players=(r.players||[]).map(p=>`<tr><td><b>${esc(p.id||'')}</b></td><td>${esc(p.name)}</td><td>${p.cashed_out?'encaissé':(p.active===false?'retiré':'actif')}</td></tr>`).join('');
-  let pb=(r.player_bills||[]).map(p=>`<tr><td>${esc(p.player_id||'')}</td><td>${esc(p.player_name)}</td><td>${esc(p.bill_number)}</td><td style="text-align:right"><b>${money(p.share_total)}</b></td><td style="text-align:right">${money(p.share_total_without_tax||((p.share_total||0)/1.15))}</td><td><a target="_blank" href="/api/pdf/player?session_id=${r.session_id||''}&table=${r.preview?r.table:''}&player_id=${p.player_id||''}">PDF</a></td></tr>`).join('');
-  let cashouts=(r.player_cashouts||[]).map(c=>`<tr><td>${esc(c.player_id||'')}</td><td>${esc(c.player_name||'')}</td><td>${esc(c.bill_number||'')}</td><td>${esc(c.payment_method||'')}</td><td style="text-align:right">${money(c.total||0)}</td></tr>`).join('');
-  let adjustments=(r.adjustments||[]).map(a=>`<tr><td>${esc(a.note||'Ajustement')}</td><td style="text-align:right">${money(a.amount||0)}</td></tr>`).join('');
-  let original=(r.original_session_total!=null)?`<tr><td>Total session complète</td><td style="text-align:right">${money(r.original_session_total||0)}</td></tr><tr><td>Déjà encaissé</td><td style="text-align:right">${money(r.prior_paid_total||0)}</td></tr>`:'';
-  $('#modalBody').innerHTML=`<div class="invoice"><h2>${esc(cfg.business_name||'Billard')} - ${tr('bill')}</h2><p><b>${esc(r.bill_number)}</b>${r.preview?' · PREFACTURE':''}</p><div class="summaryGrid"><div>Table<b>${esc(r.table)}</b></div><div>Statut<b>${esc(payment)}</b></div><div>Total<b>${money(r.total)}</b></div></div><div class="line"><span>${tr('client')}</span><b>${esc(r.client||'')}</b></div><div class="line"><span>${tr('pricing')}</span><b>${esc(r.pricing_name_fr||r.pricing_id)}</b></div><div class="line"><span>Durée</span><b>${dur(r.duration_seconds)}</b></div>${timer}<div class="billBox"><table><tr><th>Description</th><th>Total</th></tr>${original}${adjustments}<tr><td>Total sans taxes (total / 1.15)</td><td style="text-align:right">${money(r.total_without_tax||0)}</td></tr><tr><td>Taxes incluses</td><td style="text-align:right">${money(r.tax_included||0)}</td></tr><tr><td><b>Total à encaisser</b></td><td style="text-align:right"><b>${money(r.total)}</b></td></tr></table></div><p class="total">${money(r.total)}</p><h3>Détail par joueur</h3><table><tr><th>ID</th><th>Joueur</th><th>No.</th><th>Part</th><th>Sans taxes</th><th>PDF</th></tr>${pb}</table><h3>${tr('players')}</h3><table><tr><th>ID</th><th>Nom</th><th>Statut</th></tr>${players}</table>${cashouts?`<h3>Déjà encaissé</h3><table><tr><th>ID</th><th>Joueur</th><th>No.</th><th>Paiement</th><th>Total</th></tr>${cashouts}</table>`:''}<p><a target="_blank" href="/api/pdf/session?session_id=${r.session_id||''}&table=${r.preview?r.table:''}"><button class="primary">PDF facture table</button></a></p></div>`;
-  $('#modal').style.display='flex'
-}
-function closeModal(){$('#modal').style.display='none'}
-function dateOnly(v){return String(v||'').slice(0,10)}
-function prettyDate(v){let s=dateOnly(v);if(!s)return '';let p=s.split('-');return p.length===3?`${p[2]}/${p[1]}/${p[0]}`:esc(s)}
-function prettyDateTime(v){if(!v)return '';let d=new Date(v);if(isNaN(d.getTime()))return esc(v);return d.toLocaleDateString(app.lang==='fr'?'fr-CA':'en-CA',{year:'numeric',month:'2-digit',day:'2-digit'})+' '+d.toLocaleTimeString(app.lang==='fr'?'fr-CA':'en-CA',{hour:'2-digit',minute:'2-digit'})}
-function reportClockHTML(){let now=new Date(app.data.server_time||Date.now());let date=now.toLocaleDateString(app.lang==='fr'?'fr-CA':'en-CA',{weekday:'short',year:'numeric',month:'2-digit',day:'2-digit'});let time=now.toLocaleTimeString(app.lang==='fr'?'fr-CA':'en-CA',{hour:'2-digit',minute:'2-digit',second:'2-digit'});return `<div class="reportClock"><span>Date / heure système</span><b>${esc(date)}</b><b>${esc(time)}</b></div>`}
-function reportsHTML(){let cfg=app.data.config;let today=app.data.current_shift.business_date;return `<div class="split"><div class="card reportPanel"><div class="reportHead"><div><h2>${tr('reports')}</h2><p class="tiny">Date de travail: <b>${prettyDate(today)}</b> · Quart actuel: <b>${esc(app.data.current_shift.id.toUpperCase())}</b></p></div>${reportClockHTML()}</div><div class="reportBody"><div class="reportFilters"><div class="reportField"><label>${tr('date')}</label><input type="date" id="rdate" value="${today}"></div><div class="reportField"><label>${tr('shift')}</label><select id="rshift"><option value="am">AM</option><option value="pm">PM</option></select></div><div class="reportActions"><button class="primary" onclick="loadShiftReport()">${tr('shift')}</button><button class="blue" onclick="loadDailyReport()">${tr('daily')}</button><button class="warn" onclick="loadAdminReport()">Admin report</button></div></div>${app.data.auth.role==='admin'?`<div class="reportSectionTitle">${tr('owner')}</div><div class="reportFilters"><div class="reportField"><label>${tr('from')}</label><input type="date" id="ofrom" value="${today}"></div><div class="reportField"><label>${tr('until')}</label><input type="date" id="oto" value="${today}"></div><div class="reportField"><label>${tr('pricing')}</label><select id="opricing"><option value="all">Tous</option>${cfg.pricing_options.map(p=>`<option value="${p.id}">${esc(p.fr)}</option>`).join('')}</select></div><div class="reportField"><label>${tr('structure')}</label><select id="okind"><option value="all">Tous</option><option value="hourly">Horaire</option><option value="flat">Forfait</option><option value="timer">Timer</option></select></div><div class="reportField"><label>${tr('shift')}</label><select id="oshift"><option value="all">Tous</option><option value="am">AM</option><option value="pm">PM</option></select></div><div class="reportField wide"><label>${tr('search')}</label><input id="otext" placeholder="facture, table, client"></div><div class="reportActions"><button class="primary" onclick="loadOwnerReport()">${tr('load')}</button></div></div>`:''}</div></div><div class="card" id="reportOut">${renderReport(app.report)}</div></div>`}
-async function loadShiftReport(){if(!(app.data&&app.data.auth&&app.data.auth.role==='admin')){toast(tr('adminOnly'),true);return}let d=$('#rdate').value, s=$('#rshift').value;try{app.report=await api(`/api/reports/shift?date=${encodeURIComponent(d)}&shift=${encodeURIComponent(s)}`);render()}catch(e){toast(e.message,true)}}async function loadDailyReport(){if(!(app.data&&app.data.auth&&app.data.auth.role==='admin')){toast(tr('adminOnly'),true);return}let d=$('#rdate').value;try{app.report=await api(`/api/reports/daily?date=${encodeURIComponent(d)}`);render()}catch(e){toast(e.message,true)}}async function loadOwnerReport(){if(!(app.data&&app.data.auth&&app.data.auth.role==='admin')){toast(tr('adminOnly'),true);return}let q=new URLSearchParams({from:$('#ofrom').value,to:$('#oto').value,pricing_id:$('#opricing').value,pricing_kind:$('#okind').value,shift:$('#oshift').value,text:$('#otext').value});try{app.report=await api('/api/reports/owner?'+q.toString());render()}catch(e){toast(e.message,true)}}async function loadAdminReport(){if(!(app.data&&app.data.auth&&app.data.auth.role==='admin')){toast(tr('adminOnly'),true);return}try{app.report=await api('/api/reports/admin');render()}catch(e){toast(e.message,true)}}function renderReport(r){if(!r)return `<p class="muted">Charge un rapport.</p>`;let s=r.summary||{};let pdf='#';if(r.type==='shift')pdf=`/api/pdf/report?type=shift&date=${r.date}&shift=${r.shift}`;if(r.type==='daily')pdf=`/api/pdf/report?type=daily&date=${r.date}`;if(r.type==='owner'){let f=r.filters||{};pdf='/api/pdf/report?type=owner&'+new URLSearchParams(f).toString()}if(r.type==='admin')pdf='/api/pdf/report?type=admin';let rows=(r.sessions||[]).map(x=>`<tr><td>${esc(x.bill_number)}</td><td class="dateCell">${prettyDate(x.business_date||x.local_date)}</td><td>${esc(String(x.shift_id||'').toUpperCase())}</td><td>${esc(x.table)}</td><td>${esc(x.pricing_id)}</td><td>${esc(x.pricing_kind)}</td><td>${money(x.total_without_tax||0)}</td><td>${money(x.tax_included||0)}</td><td>${money(x.total)}</td><td>${esc(x.payment_method||'')}</td><td><a target="_blank" href="/api/pdf/session?session_id=${x.session_id}">PDF</a></td></tr>`).join('');let tt=Object.entries(s.table_totals||{}).map(([k,v])=>`<div>Table ${k}<b>${money(v)}</b></div>`).join('');let rates=Object.entries(r.pricing_counts||{}).map(([k,v])=>`<div>${esc(k)}<b>${esc(v)}</b></div>`).join('');let opens=Object.entries(r.table_open_counts||{}).map(([k,v])=>`<div>Table ${esc(k)}<b>${esc(v)}</b></div>`).join('');let manual=(r.manual_events||[]).map(e=>`<tr><td class="timeCell">${prettyDateTime(e.ts||'')}</td><td>${esc(e.action||'')}</td><td>${esc(e.table||'')}</td><td>${esc(JSON.stringify(e.relay||e.results||{}).slice(0,120))}</td></tr>`).join('');let meta=`<div class="reportMeta"><div><span>Rapport</span><b>${esc(r.type||'')}</b></div><div><span>Date</span><b>${prettyDate(r.date||((r.filters||{}).from)||app.data.current_shift.business_date)}</b></div><div><span>Quart</span><b>${esc(String(r.shift||(r.filters||{}).shift||'Tous').toUpperCase())}</b></div><div><span>Généré</span><b>${prettyDateTime(r.generated_at||app.data.server_time)}</b></div></div>`;return `<h2 class="reportNumber">${esc(r.report_number)}</h2>${meta}<div class="kpi"><div>Sessions<b>${s.count||0}</b></div><div>${tr('total')}<b>${money(s.total||0)}</b></div><div>Sans taxes<b>${money(s.total_without_tax||0)}</b></div><div>Taxes incluses<b>${money(s.tax_included||0)}</b></div>${tt}</div>${r.type==='admin'?`<h3>Admin report</h3><div class="kpi">${opens}${rates}</div><h3>ON/OFF manuel et timers</h3><div class="tablewrap"><table class="report-table"><thead><tr><th>Date / heure</th><th>Action</th><th>Table</th><th>Détail</th></tr></thead><tbody>${manual}</tbody></table></div>`:''}<p><a target="_blank" href="${pdf}"><button class="primary">PDF rapport</button></a> <a target="_blank" href="/api/export/sessions.csv"><button>CSV</button></a></p><div class="tablewrap"><table class="report-table"><thead><tr><th>Facture</th><th>Date</th><th>Quart</th><th>Table</th><th>Tarif</th><th>Structure</th><th>Sans taxes</th><th>Taxes</th><th>Total</th><th>Paiement</th><th>PDF</th></tr></thead><tbody>${rows}</tbody></table></div>`}
-function adminSection(title,body){return `<div class="adminSection"><div class="adminSectionHead"><span class="adminSectionTitle">${esc(title)}</span><div class="adminSectionLine"></div></div>${body}</div>`}
-function settingRow(name,desc,control){return `<div class="settingRow"><div><span class="settingName">${esc(name)}</span><span class="settingDesc">${esc(desc)}</span></div><div class="settingControl">${control}</div></div>`}
-function pricingById(id){let list=(app.data&&app.data.config&&app.data.config.pricing_options)||[];for(let i=0;i<list.length;i++){if(list[i].id===id)return list[i]}return {}}
-function priceInput(id,field,label,step){let p=pricingById(id);let val=p[field];if(val==null)val=0;return `<div class="priceSetting"><b>${esc(label)}</b><label>${esc(field)}</label><input id="rate_${esc(id)}_${esc(field)}" type="number" step="${esc(step||'0.05')}" value="${esc(val)}"></div>`}
-function adminHTML(){
-  if(app.data.auth.role!=='admin')return `<div class="card"><h2>${tr('adminOnly')}</h2></div>`;
-  let cfg=app.data.config;
-  let tables=Object.values((app.data.state&&app.data.state.tables)||{});
-  let active=tables.filter(t=>t.status!=='off').length;
-  let allowed=(app.data.allowed_pricing||[]).map(p=>p.id).join(', ')||'hors heures';
-  let status=`<div class="adminStatusGrid"><div class="adminStatus"><span>Serveur</span><b class="good">Online</b></div><div class="adminStatus"><span>Tables actives</span><b>${active} / ${tables.length}</b></div><div class="adminStatus"><span>Quart actuel</span><b class="warnText">${esc(app.data.current_shift.id.toUpperCase())}</b></div><div class="adminStatus"><span>Tarifs actifs</span><b class="blueText">${esc(allowed)}</b></div></div>`;
-  let system=settingRow('Nom commerce','Nom affiché sur factures et interface',`<input id="biz" value="${esc(cfg.business_name)}">`)+
-    settingRow('Tax %','Pourcentage imprimé dans les rapports',`<input id="tax" type="number" step="0.01" value="${esc(cfg.tax_percent)}">`)+
-    settingRow('Arrondi','Arrondi de facture, exemple 0.05',`<input id="rounding" type="number" step="0.01" value="${esc(cfg.rounding)}">`)+
-    settingRow('Timezone','Utilisé pour AM / PM automatique',`<input id="timezone" value="${esc(cfg.timezone||'America/Toronto')}">`)+
-    settingRow('Nouveau mot de passe admin','Changer le mot de passe propriétaire',`<input id="adminpw" type="password" placeholder="laisser vide = aucun changement">`)+
-    `<div class="adminActions" style="margin-top:10px"><button class="primary" onclick="saveBasicConfig()">${tr('save')}</button><button class="warn" onclick="app.tab='reports';loadAdminReport()">Admin report</button><button class="ghost" onclick="app.tab='floor';render()">Retour tables</button><button onclick="backup()">${tr('backup')}</button></div>`;
-  let pricing=`<div class="pricingAdminGrid">${priceInput('am_hourly','per_hour','AM horaire 6$/h','0.05')}${priceInput('am_flat','flat_amount','AM forfait P1','0.05')}${priceInput('am_flat','extra_player_fee','AM + joueur','0.05')}${priceInput('pm_12_hourly','per_hour','PM horaire semaine','0.05')}${priceInput('pm_mon_tue_flat','flat_amount','PM lundi/mardi forfait','0.05')}${priceInput('pm_fri_sat_hourly','per_hour','PM ven/sam horaire','0.05')}</div><p class="tiny" style="margin-top:10px">Ces valeurs se sauvegardent dans config.json. AM/PM continue de changer automatiquement avec l'heure locale.</p>`;
-  let reports=`<div class="adminActions"><button class="warn" onclick="app.tab='reports';loadAdminReport()">Ouvrir Admin report</button><a target="_blank" href="/api/export/sessions.csv"><button>sessions.csv</button></a><a target="_blank" href="/api/export/events.jsonl"><button>${tr('events')}</button></a><a target="_blank" href="/api/export/config.json"><button>config.json</button></a></div>`;
-  let relay=`<div class="relayGrid">${[1,2,3,4,5,6,7,8].map(ch=>`<div class="relayPair"><span>Relay CH${ch}</span><button class="on" onclick="relayChannel(${ch},true)">ON</button><button class="off" onclick="relayChannel(${ch},false)">OFF</button></div>`).join('')}</div>`;
-  return `<div class="adminShell"><div class="adminNav"><button class="adminBack" onclick="app.tab='floor';render()">Retour dashboard</button><span class="adminTitleMini">Admin Panel</span><span class="adminBadge">Staff only</span></div><div class="adminHero"><h2>Admin Settings</h2><p>Paramètres système · tarifs · rapports · relais</p></div>${adminSection('System Status',status)}${adminSection('Software Settings',system)}${adminSection('Pricing Slots',pricing)}${adminSection('Reports & Exports',reports)}${adminSection('Relay Control',relay)}</div>`;
-}
-async function saveBasicConfig(){
-  try{
-    let pricing_updates={};
-    [['am_hourly','per_hour'],['am_flat','flat_amount'],['am_flat','extra_player_fee'],['pm_12_hourly','per_hour'],['pm_mon_tue_flat','flat_amount'],['pm_fri_sat_hourly','per_hour']].forEach(pair=>{
-      let id=pair[0],field=pair[1],el=$(`#rate_${id}_${field}`);
-      if(el){if(!pricing_updates[id])pricing_updates[id]={};pricing_updates[id][field]=Number(el.value||0)}
-    });
-    let d=await api('/api/admin/basic_config',{business_name:$('#biz').value,tax_percent:Number($('#tax').value||0),rounding:Number($('#rounding').value||0.05),timezone:$('#timezone').value,admin_password:$('#adminpw').value,pricing_updates:pricing_updates});
-    applyState(d.state);toast('OK');render()
-  }catch(e){toast(e.message,true)}
-}
-async function relayChannel(ch,on){try{await api('/api/relay/set',{channel:ch,on});toast('OK')}catch(e){toast(e.message,true)}}async function backup(){try{let d=await api('/api/admin/backup',{});toast('Backup: '+d.folder)}catch(e){toast(e.message,true)}}
+function showInvoice(r){let cfg=app.data.config;let players=(r.players||[]).map(p=>`<tr><td><b>${esc(p.id||'')}</b></td><td>${esc(p.name)}</td><td>${p.cashed_out?'encaissé':(p.active===false?'retiré':'actif')}</td></tr>`).join('');let pb=(r.player_bills||[]).map(p=>`<tr><td>${esc(p.player_id||'')}</td><td>${esc(p.player_name)}</td><td>${esc(p.bill_number)}</td><td style="text-align:right">${money(p.share_total)}</td><td style="text-align:right">${money(p.share_total_without_tax||((p.share_total||0)/1.15))}</td><td><a target="_blank" href="/api/pdf/player?session_id=${r.session_id||''}&table=${r.preview?r.table:''}&player_id=${p.player_id||''}">PDF</a></td></tr>`).join('');let cashouts=(r.player_cashouts||[]).map(c=>`<tr><td>${esc(c.player_id||'')}</td><td>${esc(c.player_name||'')}</td><td>${esc(c.bill_number||'')}</td><td style="text-align:right">${money(c.total||0)}</td></tr>`).join('');let original=(r.original_session_total!=null)?`<tr><td>Total session complète</td><td>${money(r.original_session_total||0)}</td></tr><tr><td>Déjà encaissé</td><td>${money(r.prior_paid_total||0)}</td></tr>`:'';$('#modalBody').innerHTML=`<div class="invoice"><h2>${cfg.business_name||'Billard'} - ${tr('bill')}</h2><p><b>${esc(r.bill_number)}</b>${r.preview?' · PREFACTURE':''}</p><div class="line"><span>${tr('table')}</span><b>${r.table}</b></div><div class="line"><span>${tr('client')}</span><b>${esc(r.client||'')}</b></div><div class="line"><span>${tr('pricing')}</span><b>${esc(r.pricing_name_fr||r.pricing_id)}</b></div><div class="line"><span>Durée</span><b>${dur(r.duration_seconds)}</b></div><table><tr><th>Description</th><th>Total</th></tr>${original}<tr><td>Total sans taxes (total / 1.15)</td><td>${money(r.total_without_tax||0)}</td></tr><tr><td>Taxes incluses</td><td>${money(r.tax_included||0)}</td></tr><tr><td><b>Total à encaisser</b></td><td><b>${money(r.total)}</b></td></tr></table><p class="total">${money(r.total)}</p><h3>${tr('players')}</h3><table><tr><th>ID</th><th>Nom</th><th>Statut</th></tr>${players}</table>${cashouts?`<h3>Déjà encaissé</h3><table><tr><th>ID</th><th>Joueur</th><th>No.</th><th>Total</th></tr>${cashouts}</table>`:''}<h3>Factures joueurs</h3><table><tr><th>ID</th><th>Joueur</th><th>No.</th><th>Part</th><th>Sans taxes</th><th>PDF</th></tr>${pb}</table><p><a target="_blank" href="/api/pdf/session?session_id=${r.session_id||''}&table=${r.preview?r.table:''}">PDF facture table</a></p></div>`;$('#modal').style.display='flex'}function closeModal(){$('#modal').style.display='none'}
+function reportsHTML(){let cfg=app.data.config;let today=app.data.current_shift.business_date;return `<div class="split"><div class="card"><h2>${tr('reports')}</h2><div class="row"><div class="col-3"><label>${tr('date')}</label><input type="date" id="rdate" value="${today}"></div><div class="col-3"><label>${tr('shift')}</label><select id="rshift"><option value="am">AM</option><option value="pm">PM</option></select></div><div class="col-6 btns" style="align-items:end"><button class="primary" onclick="loadShiftReport()">${tr('shift')}</button><button class="blue" onclick="loadDailyReport()">${tr('daily')}</button><a id="pdfLink" target="_blank"></a></div></div>${app.data.auth.role==='admin'?`<hr style="border-color:var(--line)"><h3>${tr('owner')}</h3><div class="row"><div class="col-3"><label>${tr('from')}</label><input type="date" id="ofrom"></div><div class="col-3"><label>${tr('until')}</label><input type="date" id="oto" value="${today}"></div><div class="col-3"><label>${tr('pricing')}</label><select id="opricing"><option value="all">Tous</option>${cfg.pricing_options.map(p=>`<option value="${p.id}">${esc(p.fr)}</option>`).join('')}</select></div><div class="col-3"><label>${tr('structure')}</label><select id="okind"><option value="all">Tous</option><option value="hourly">Horaire</option><option value="flat">Forfait</option></select></div><div class="col-3"><label>${tr('shift')}</label><select id="oshift"><option value="all">Tous</option><option value="am">AM</option><option value="pm">PM</option></select></div><div class="col-6"><label>${tr('search')}</label><input id="otext" placeholder="facture, table, client"></div><div class="col-3" style="display:flex;align-items:end"><button class="primary" style="width:100%" onclick="loadOwnerReport()">${tr('load')}</button></div></div>`:''}</div><div class="card" id="reportOut">${renderReport(app.report)}</div></div>`}
+async function loadShiftReport(){if(app.data?.auth?.role!=='admin'){toast(tr('adminOnly'),true);return}let d=$('#rdate').value, s=$('#rshift').value;try{app.report=await api(`/api/reports/shift?date=${encodeURIComponent(d)}&shift=${encodeURIComponent(s)}`);render()}catch(e){toast(e.message,true)}}async function loadDailyReport(){if(app.data?.auth?.role!=='admin'){toast(tr('adminOnly'),true);return}let d=$('#rdate').value;try{app.report=await api(`/api/reports/daily?date=${encodeURIComponent(d)}`);render()}catch(e){toast(e.message,true)}}async function loadOwnerReport(){if(app.data?.auth?.role!=='admin'){toast(tr('adminOnly'),true);return}let q=new URLSearchParams({from:$('#ofrom').value,to:$('#oto').value,pricing_id:$('#opricing').value,pricing_kind:$('#okind').value,shift:$('#oshift').value,text:$('#otext').value});try{app.report=await api('/api/reports/owner?'+q.toString());render()}catch(e){toast(e.message,true)}}function renderReport(r){if(!r)return `<p class="muted">Charge un rapport.</p>`;let s=r.summary||{};let pdf='#';if(r.type==='shift')pdf=`/api/pdf/report?type=shift&date=${r.date}&shift=${r.shift}`;if(r.type==='daily')pdf=`/api/pdf/report?type=daily&date=${r.date}`;if(r.type==='owner'){let f=r.filters||{};pdf='/api/pdf/report?type=owner&'+new URLSearchParams(f).toString()}let rows=(r.sessions||[]).map(x=>`<tr><td>${esc(x.bill_number)}</td><td>${esc(x.business_date)}</td><td>${esc(x.shift_id)}</td><td>${esc(x.table)}</td><td>${esc(x.pricing_id)}</td><td>${esc(x.pricing_kind)}</td><td>${money(x.total_without_tax||0)}</td><td>${money(x.tax_included||0)}</td><td>${money(x.total)}</td><td><a target="_blank" href="/api/pdf/session?session_id=${x.session_id}">PDF</a></td></tr>`).join('');let tt=Object.entries(s.table_totals||{}).map(([k,v])=>`<div>Table ${k}<b>${money(v)}</b></div>`).join('');return `<h2>${esc(r.report_number)}</h2><div class="kpi"><div>Sessions<b>${s.count||0}</b></div><div>${tr('total')}<b>${money(s.total||0)}</b></div><div>Sans taxes<b>${money(s.total_without_tax||0)}</b></div><div>Taxes incluses<b>${money(s.tax_included||0)}</b></div>${tt}</div><p><a target="_blank" href="${pdf}"><button class="primary">PDF rapport</button></a> <a target="_blank" href="/api/export/sessions.csv"><button>CSV</button></a></p><div class="tablewrap"><table class="report-table"><thead><tr><th>Facture</th><th>Date</th><th>Quart</th><th>Table</th><th>Tarif</th><th>Structure</th><th>Sans taxes</th><th>Taxes</th><th>Total</th><th>PDF</th></tr></thead><tbody>${rows}</tbody></table></div>`}
+function adminHTML(){if(app.data.auth.role!=='admin')return `<div class="card"><h2>${tr('adminOnly')}</h2></div>`;let cfg=app.data.config;return `<div class="card"><h2>${tr('admin')}</h2><p class="muted">Panneau propriétaire: relais, exports, backups, logs, configuration JSON. Staff ne voit pas ces contrôles.</p><div class="row"><div class="col-4"><label>Nom commerce</label><input id="biz" value="${esc(cfg.business_name)}"></div><div class="col-2"><label>Tax %</label><input id="tax" type="number" step="0.01" value="${esc(cfg.tax_percent)}"></div><div class="col-2"><label>Arrondi</label><input id="rounding" type="number" step="0.01" value="${esc(cfg.rounding)}"></div><div class="col-4" style="display:flex;align-items:end"><button class="primary" onclick="saveBasicConfig()">${tr('save')}</button></div></div><hr style="border-color:var(--line)"><h3>${tr('relay')}</h3><div class="btns">${[1,2,3,4,5,6,7,8].map(ch=>`<button onclick="relayChannel(${ch},true)">CH${ch} ON</button><button onclick="relayChannel(${ch},false)">CH${ch} OFF</button>`).join('')}</div><hr style="border-color:var(--line)"><div class="btns"><button onclick="backup()">${tr('backup')}</button><a target="_blank" href="/api/export/events.jsonl"><button>${tr('events')}</button></a><a target="_blank" href="/api/export/config.json"><button>config.json</button></a><a target="_blank" href="/api/export/sessions.csv"><button>sessions.csv</button></a></div></div>`}
+async function saveBasicConfig(){try{let d=await api('/api/admin/basic_config',{business_name:$('#biz').value,tax_percent:Number($('#tax').value||0),rounding:Number($('#rounding').value||0.05)});applyState(d.state);toast('OK');render()}catch(e){toast(e.message,true)}}async function relayChannel(ch,on){try{await api('/api/relay/set',{channel:ch,on});toast('OK')}catch(e){toast(e.message,true)}}async function backup(){try{let d=await api('/api/admin/backup',{});toast('Backup: '+d.folder)}catch(e){toast(e.message,true)}}
 setInterval(()=>refresh(true),3000);refresh();
 </script></body></html>'''
 
@@ -2898,11 +2480,6 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(err, 403 if user else 401); return
                 query = {k: (v[0] if v else "") for k, v in qs.items()}
                 self._json(owner_report(query))
-            elif path == "/api/reports/admin":
-                ok, user, err = require_admin(self.headers)
-                if not ok:
-                    self._json(err, 403 if user else 401); return
-                self._json(admin_report())
             elif path == "/api/pdf/session":
                 ok, user, err = require_user(self.headers)
                 if not ok:
@@ -2956,10 +2533,6 @@ class Handler(BaseHTTPRequestHandler):
                         self._json({"ok": False, "error": "Accès admin requis."}, 403); return
                     query = {k: (v[0] if v else "") for k, v in qs.items()}
                     rep = owner_report(query)
-                elif rtype == "admin":
-                    if user.get("role") != "admin":
-                        self._json({"ok": False, "error": "Accès admin requis."}, 403); return
-                    rep = admin_report()
                 else:
                     rep = daily_report((qs.get("date") or [current_shift()[1]])[0])
                 pdf = pdf_report(rep)
@@ -3037,9 +2610,6 @@ class Handler(BaseHTTPRequestHandler):
                 elif path == "/api/table/resume":
                     ok2, msg, data = resume_table(body, user)
                     self._json({"ok": ok2, "message": msg, **({"state": data} if data else {})}, 200 if ok2 else 400)
-                elif path == "/api/table/resume_hourly":
-                    ok2, msg, data = resume_table_hourly(body, user)
-                    self._json({"ok": ok2, "message": msg, **({"state": data} if data else {})}, 200 if ok2 else 400)
                 elif path == "/api/table/stop":
                     ok2, msg, data = stop_table(body, user)
                     if ok2:
@@ -3086,26 +2656,6 @@ class Handler(BaseHTTPRequestHandler):
                     cfg["business_name"] = str(body.get("business_name") or cfg.get("business_name") or "Billard")
                     cfg["tax_percent"] = float(body.get("tax_percent") or 0)
                     cfg["rounding"] = float(body.get("rounding") or 0.05)
-                    cfg["timezone"] = str(body.get("timezone") or cfg.get("timezone") or "America/Toronto").strip() or "America/Toronto"
-                    custom_rate_password = str(body.get("custom_rate_password") or "").strip()
-                    if custom_rate_password:
-                        cfg["custom_rate_password"] = custom_rate_password
-                    pricing_updates = body.get("pricing_updates") if isinstance(body.get("pricing_updates"), dict) else {}
-                    editable_fields = {"per_hour", "flat_amount", "extra_player_fee"}
-                    by_id = {str(p.get("id")): p for p in cfg.get("pricing_options", []) if isinstance(p, dict)}
-                    for rid, updates in pricing_updates.items():
-                        row = by_id.get(str(rid))
-                        if not row or not isinstance(updates, dict):
-                            continue
-                        for field, value in updates.items():
-                            if field in editable_fields:
-                                row[field] = max(0.0, float(value or 0))
-                    cfg["pricing_options"] = normalize_pricing_options(cfg.get("pricing_options"))
-                    admin_password = str(body.get("admin_password") or "").strip()
-                    if admin_password:
-                        cfg.setdefault("passwords", {}).setdefault("am", "am")
-                        cfg.setdefault("passwords", {}).setdefault("pm", "PM")
-                        cfg.setdefault("passwords", {})["admin"] = admin_password
                     save_json(CONFIG_PATH, cfg)
                     event("admin_basic_config", None, user)
                     self._json({"ok": True, "state": self._state_with_auth(user)})
@@ -3156,11 +2706,8 @@ def main():
     print(f"\n{APP_NAME} {APP_VERSION}")
     print(f"URL: {url}")
     print(f"Runtime: {DATA_DIR}")
-    cfg = load_config()
-    pw = cfg.get("passwords", {})
-    print(f"Passwords: AM/{pw.get('am', 'am')} | PM/{pw.get('pm', 'PM')} | Admin={pw.get('admin', 'admin')}")
+    print("Passwords: AM/am | PM/pm | Admin=admin | Custom rate=pool")
     print("CTRL+C pour fermer.\n")
-    threading.Thread(target=timer_worker, daemon=True).start()
     if not args.no_browser:
         threading.Timer(0.8, lambda: open_browser(url)).start()
     try:

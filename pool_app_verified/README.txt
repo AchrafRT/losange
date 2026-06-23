@@ -1,4 +1,4 @@
-SayF Pool App - v13 AM/PM/Custom Timer Update
+SayF Pool App - v11 Admin-Only Reports Tab
 
 How to run:
 1. Extract this ZIP.
@@ -13,16 +13,10 @@ Passwords:
 - Admin: admin
 - Custom rate override: pool
 
-Main v13 changes:
-- Original single-file architecture preserved in pool_app_verified/run_pool.py.
-- AM / PM / Custom tariff tabs added to each table.
-- AM flat bill split: P1 = 9$, added players = 7$ each.
-- Close buttons simplified to Fermer PAYÉ / Fermer NON PAYÉ.
-- Custom timer supports amount or minutes.
-- Timer blinks the light at 3 minutes remaining and turns it off at expiry.
-- Expired custom timers can resume at the current normal hourly rate.
-- Admin report added for table opens, popular rates, manual ON/OFF, timers, and totals.
-- Admin password can be changed from the Admin panel.
+Main v11 change:
+- The Reports tab beside Tables is now visible only when logged in as Admin.
+- AM and PM staff only see the Tables tab and the Close & Report button.
+- Close & Report still shows the current shift/session sales and then logs the shift out when closed.
 
 Kept from v10:
 - Deterministic player IDs: T3P1, T3P2, etc.
